@@ -3,9 +3,24 @@ name = "stillsane"
 version = "0.0.1"
 description = "Know when your LLM app quietly stops working."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Sanket Marathe" }]
+dependencies = [
+    "httpx>=0.27",
+    "numpy>=1.24",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# The local embedding model. Split out so the engine and its tests install and
+# run with no model download; `stillsane check` pulls it in on first semantic use.
+semantic = ["model2vec>=0.3"]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
+[project.scripts]
+stillsane = "stillsane.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/msanket9/stillsane"
@@ -13,3 +28,19 @@ Homepage = "https://github.com/msanket9/stillsane"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stillsane"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
+# ISC would flag the deliberately wrapped fixture strings in tests/conftest.py,
+# where the line breaks are there to keep the scenario texts readable.
+ignore = ["E501"]
