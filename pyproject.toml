@@ -1,0 +1,15 @@
+[project]
+name = "stillsane"
+version = "0.0.1"
+description = "Know when your LLM app quietly stops working."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Sanket Marathe" }]
+
+[project.urls]
+Homepage = "https://github.com/msanket9/stillsane"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
