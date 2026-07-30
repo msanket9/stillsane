@@ -132,6 +132,42 @@ def test_identical_baseline_tolerates_whitespace(signals_for):
     assert band.floored, "a zero-variance baseline must fall back to the absolute floor"
 
 
+def test_under_sampled_baseline_does_not_cry_wolf(signals_for):
+    """A probe that varies a little can draw N identical samples at baseline.
+
+    Found by running the real CLI against a local server: five draws from three
+    near-identical phrasings came back byte-identical, the band collapsed to the
+    floor, and the next ordinary check reported drift. The current run's own
+    internal spread is the evidence that the baseline was simply under-sampled.
+    """
+    unlucky = ['{"due_date": "2026-07-01", "total": 1240.50}'] * 5
+    ordinary = [
+        '{"total": 1240.50, "due_date": "2026-07-01"}',
+        '{"total": 1240.5, "due_date": "2026-07-01"}',
+        '{"due_date": "2026-07-01", "total": 1240.50}',
+    ]
+    verdict = run(signals_for, unlucky, ordinary, ["valid_json"])
+    assert verdict.level is Level.PASS, [
+        (s.signal, s.level, s.detail) for s in verdict.moved
+    ]
+
+    semantic = next(s for s in verdict.signals if s.signal == "semantic_distance")
+    assert "under-sampled" in semantic.detail
+
+
+def test_the_rescue_is_not_a_blanket_amnesty(signals_for):
+    """The complement, and the reason the rescue is safe.
+
+    Same degenerate baseline, but the current run is internally consistent *and*
+    says something different. Within-run spread stays near zero, so the band stays
+    floored and the drift is still caught.
+    """
+    unlucky = ['{"due_date": "2026-07-01", "total": 1240.50}'] * 5
+    moved = ['{"status": "unable to parse invoice", "total": null}'] * 3
+    verdict = run(signals_for, unlucky, moved, ["valid_json"])
+    assert verdict.level is Level.DRIFT
+
+
 def test_identical_baseline_still_catches_content_change(signals_for):
     identical = ['{"status": "ok", "count": 3}'] * 5
     changed = ['{"status": "degraded", "count": 0, "reason": "upstream timeout"}'] * 3

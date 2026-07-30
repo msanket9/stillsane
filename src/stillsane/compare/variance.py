@@ -275,6 +275,51 @@ def evaluate_pairwise(
         floor=signal.floor,
         override=signal.band_override,
     )
+
+    # Rescue an under-sampled baseline.
+    #
+    # A probe that varies only a little can easily return N identical samples at
+    # baseline -- five draws from three near-identical phrasings hit this about one
+    # time in eighty. The band then has zero width, and the very next check reports
+    # ordinary sampling variance as drift. That is the false positive that gets a
+    # monitor uninstalled in week one, and no amount of tuning the floor fixes it,
+    # because the floor cannot know how much this particular probe varies.
+    #
+    # The current run does know. Distances *within* the current samples measure
+    # intrinsic variance and are blind to wholesale drift -- a model that moved
+    # somewhere else is still just as self-consistent once it gets there. So if the
+    # baseline learned nothing and the current run demonstrates real internal
+    # variance, the current run is better evidence and the band widens to admit it.
+    #
+    # This cannot mask a genuine shift: a drifted probe whose new behaviour is
+    # internally consistent still yields near-zero within-run distances, leaves the
+    # band floored, and fails. And where the new behaviour genuinely is that noisy,
+    # a cross distance of the same order honestly is indistinguishable from noise.
+    # Two conditions gate this, and both are load-bearing.
+    #
+    # The baseline must look *genuinely* deterministic -- every distance inside the
+    # floor -- across enough pairs to mean it. A two-sample baseline yields a single
+    # distance whose MAD is zero by arithmetic rather than by evidence, and treating
+    # that as "deterministic" would hand a free pass to any probe with a thin
+    # baseline, which is exactly backwards.
+    rescue_note = ""
+    deterministic_baseline = (
+        len(within) >= 3 and max(within) <= max(signal.floor, EPS)
+    )
+    if band.floored and deterministic_baseline and signal.band_override is None:
+        # Built from the current run's spread *alone*. Pooling it with the baseline
+        # would not work: a dozen zeros swamp three real values and the median stays
+        # at zero, so the band never actually widens. The premise of the rescue is
+        # that the baseline's estimate is the unreliable one.
+        within_now = pairwise_within(current, signal) if len(current) >= 2 else []
+        if within_now:
+            widened = robust_band(
+                within_now, direction=Direction.UP_IS_BAD, cfg=cfg, floor=signal.floor
+            )
+            if widened.upper > band.upper:
+                band = widened
+                rescue_note = " [baseline under-sampled; widened from this run's own spread]"
+
     observed = float(np.median(cross))
     z = z_score(observed, band, Direction.UP_IS_BAD)
     p = mann_whitney_p(within, cross)
@@ -285,6 +330,7 @@ def evaluate_pairwise(
     detail = f"{observed:.4g} vs normal {band.center:.4g} (band {band.describe()}){note}"
     if band.floored:
         detail += " [floored]"
+    detail += rescue_note
     return SignalVerdict(
         signal=signal.name,
         kind=SignalKind.PAIRWISE,

@@ -1,11 +1,35 @@
 [project]
 name = "stillsane"
-version = "0.0.1"
+dynamic = ["version"]
 description = "Know when your LLM app quietly stops working."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Sanket Marathe" }]
+keywords = [
+    "llm",
+    "drift",
+    "monitoring",
+    "evals",
+    "observability",
+    "regression-testing",
+    "agents",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "Topic :: System :: Monitoring",
+]
 dependencies = [
     "httpx>=0.27",
     "numpy>=1.24",
@@ -24,13 +48,23 @@ stillsane = "stillsane.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/msanket9/stillsane"
+Repository = "https://github.com/msanket9/stillsane"
+Issues = "https://github.com/msanket9/stillsane/issues"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+path = "src/stillsane/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/stillsane"]
+
+[tool.hatch.build.targets.sdist]
+# Ship the tests: they are the argument that the variance model works, and a
+# source distribution nobody can verify is worth less than one they can.
+include = ["src/", "tests/", "README.md", "LICENSE", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

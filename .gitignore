@@ -12,5 +12,8 @@ build/
 .pytest_cache/
 .ruff_cache/
 
-# stillsane local state
-.stillsane/
+# stillsane local state.
+# Baselines are deliberately NOT ignored: they are plain text, they diff like
+# code, and CI needs them in the repo to have anything to compare against.
+.stillsane/history.sqlite
+.stillsane/cache/

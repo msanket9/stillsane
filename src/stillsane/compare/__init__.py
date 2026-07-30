@@ -5,7 +5,15 @@ returns verdicts. No HTTP, no filesystem, no config parsing. That boundary is
 what makes the hard part testable against fixtures with no network and no spend.
 """
 
-from .pooling import PoolConfig, is_clean, merge_pool, original_scale_of, pool_from_run
+from .pooling import (
+    Anchor,
+    PoolConfig,
+    anchor_of,
+    is_clean,
+    merge_pool,
+    pool_from_run,
+    within_run_evidence,
+)
 from .variance import (
     BandConfig,
     evaluate,
@@ -22,8 +30,10 @@ from .variance import (
 from .verdict import build_run, compare_probe
 
 __all__ = [
+    "Anchor",
     "BandConfig",
     "PoolConfig",
+    "anchor_of",
     "build_run",
     "compare_probe",
     "evaluate",
@@ -33,11 +43,11 @@ __all__ = [
     "is_clean",
     "mann_whitney_p",
     "merge_pool",
-    "original_scale_of",
     "pairwise_cross",
     "pairwise_within",
     "pool_from_run",
     "robust_band",
     "robust_centre_scale",
+    "within_run_evidence",
     "z_score",
 ]
