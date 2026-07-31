@@ -8,6 +8,7 @@ spend. `default_embedder()` is what production actually gets.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
@@ -44,16 +45,32 @@ class Model2VecEmbedder:
 
     def _load(self):
         if self._model is None:
+            # Hugging Face's progress bars go to stderr on the first run. This is a
+            # monitoring tool whose output gets piped and parsed, so keep it quiet
+            # unless the user has said otherwise.
+            os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
             try:
                 from model2vec import StaticModel
-            except ImportError as exc:  # pragma: no cover - depends on install
+            except ImportError as exc:  # pragma: no cover - a broken environment
                 raise RuntimeError(
-                    "Semantic drift detection needs the embedding model.\n"
-                    "  pip install 'stillsane[semantic]'\n"
+                    "Could not import model2vec, which stillsane depends on for "
+                    "semantic drift detection.\n"
+                    "  pip install --upgrade stillsane\n"
                     "Or set `embedder: hashing` in your config to run fully offline "
                     "with a weaker signal."
                 ) from exc
-            self._model = StaticModel.from_pretrained(self.model_name)
+            try:
+                self._model = StaticModel.from_pretrained(self.model_name)
+            except Exception as exc:
+                # First use downloads ~32MB. An air-gapped box or a blocked egress
+                # should get told what happened and how to proceed, not a traceback
+                # from somewhere inside the hub client.
+                raise RuntimeError(
+                    f"Could not load the embedding model {self.model_name!r}: {exc}\n"
+                    "The first run downloads it (~32MB) and caches it. If this "
+                    "machine has no internet access, set `embedder: hashing` in your "
+                    "config to run fully offline with a weaker signal."
+                ) from exc
         return self._model
 
     def encode(self, texts: Sequence[str]) -> np.ndarray:

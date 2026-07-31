@@ -12,8 +12,16 @@ import math
 
 import pytest
 
-from stillsane.compare import BandConfig, mann_whitney_p, robust_band, robust_centre_scale, z_score
-from stillsane.models import Direction
+from stillsane.compare import (
+    BandConfig,
+    evaluate_pairwise,
+    mann_whitney_p,
+    robust_band,
+    robust_centre_scale,
+    z_score,
+)
+from stillsane.models import Direction, Level, Sample
+from stillsane.signals.base import PairwiseSignal
 
 CFG = BandConfig()
 
@@ -137,3 +145,78 @@ def test_mann_whitney_p_is_a_probability():
 def test_empty_input_is_survivable():
     centre, scale = robust_centre_scale([])
     assert centre == 0.0 and scale == 0.0
+
+
+# --- The under-sampled-baseline rescue ------------------------------------
+#
+# Driven through a stub signal with programmed distances rather than real text, so
+# these pin the decision boundary itself and cannot drift when an embedder changes.
+
+
+class ProgrammedDistance(PairwiseSignal):
+    """Returns a distance looked up from the pair of sample texts."""
+
+    name = "semantic_distance"
+    floor = 0.02
+
+    def __init__(self, within_baseline: float, within_current: float, cross: float) -> None:
+        self.within_baseline = within_baseline
+        self.within_current = within_current
+        self.cross = cross
+
+    def distance(self, a, b):
+        if a.text == b.text == "base":
+            return self.within_baseline
+        if a.text == b.text == "now":
+            return self.within_current
+        return self.cross
+
+
+def _samples(text: str, n: int) -> list[Sample]:
+    return [Sample(probe_id="p", target_name="t", text=text) for _ in range(n)]
+
+
+def _verdict(signal: ProgrammedDistance):
+    return evaluate_pairwise(signal, _samples("base", 5), _samples("now", 3), CFG)
+
+
+def test_rescue_fires_when_the_baseline_saw_no_variation():
+    """Five byte-identical baseline draws from a probe that does in fact vary."""
+    verdict = _verdict(ProgrammedDistance(within_baseline=0.0, within_current=0.08, cross=0.08))
+    assert verdict.level is Level.PASS
+    assert "under-sampled" in verdict.detail
+
+
+def test_rescue_stays_out_when_the_baseline_measured_a_real_spread():
+    """The regression that motivated the fraction gate.
+
+    A baseline spread of 0.017 sits inside the 0.02 floor but is a genuine
+    measurement, not an absence of one. Widening off the current run's own
+    chattiness here let clean JSON turning into prose-wrapped JSON pass.
+    """
+    verdict = _verdict(
+        ProgrammedDistance(within_baseline=0.0175, within_current=0.22, cross=0.134)
+    )
+    assert verdict.level is Level.DRIFT
+    assert "under-sampled" not in verdict.detail
+
+
+def test_rescue_does_not_excuse_a_consistent_shift():
+    """Degenerate baseline, but the new behaviour is internally consistent too."""
+    verdict = _verdict(ProgrammedDistance(within_baseline=0.0, within_current=0.0, cross=0.6))
+    assert verdict.level is Level.DRIFT
+
+
+def test_rescue_needs_enough_baseline_pairs():
+    """Two samples give one distance, whose spread is zero by arithmetic."""
+    signal = ProgrammedDistance(within_baseline=0.0, within_current=0.08, cross=0.08)
+    verdict = evaluate_pairwise(signal, _samples("base", 2), _samples("now", 3), CFG)
+    assert "under-sampled" not in verdict.detail
+
+
+def test_an_explicit_band_is_never_second_guessed():
+    signal = ProgrammedDistance(within_baseline=0.0, within_current=0.5, cross=0.5)
+    signal.band_override = 0.1
+    verdict = _verdict(signal)
+    assert verdict.level is Level.DRIFT
+    assert "under-sampled" not in verdict.detail

@@ -43,6 +43,11 @@ EPS = 1e-12
 #: data, so `k` keeps its familiar "number of sigmas" meaning.
 MAD_TO_SIGMA = 1.4826
 
+#: A baseline counts as uninformative -- as having observed no variation at all,
+#: rather than a little -- only when its spread is under this fraction of the
+#: signal's floor. Anything above it is a real measurement and gets trusted.
+DEGENERATE_FRACTION = 0.1
+
 
 @dataclass(frozen=True)
 class BandConfig:
@@ -291,22 +296,29 @@ def evaluate_pairwise(
     # baseline learned nothing and the current run demonstrates real internal
     # variance, the current run is better evidence and the band widens to admit it.
     #
-    # This cannot mask a genuine shift: a drifted probe whose new behaviour is
-    # internally consistent still yields near-zero within-run distances, leaves the
-    # band floored, and fails. And where the new behaviour genuinely is that noisy,
-    # a cross distance of the same order honestly is indistinguishable from noise.
     # Two conditions gate this, and both are load-bearing.
     #
-    # The baseline must look *genuinely* deterministic -- every distance inside the
-    # floor -- across enough pairs to mean it. A two-sample baseline yields a single
-    # distance whose MAD is zero by arithmetic rather than by evidence, and treating
-    # that as "deterministic" would hand a free pass to any probe with a thin
-    # baseline, which is exactly backwards.
+    # Enough pairs to mean it. A two-sample baseline yields a single distance whose
+    # MAD is zero by arithmetic rather than by evidence, and treating that as
+    # "deterministic" would hand a free pass to any probe with a thin baseline.
+    #
+    # And the baseline samples must have been *effectively identical* -- spread far
+    # below the floor, not merely inside it. This distinction is the whole safety
+    # margin. A baseline that measured a small but real spread (say 0.017 against a
+    # floor of 0.02) is a valid tight estimate and must be trusted; only a baseline
+    # that observed no variation at all is uninformative enough to override.
+    #
+    # Getting that wrong produces a false negative rather than a false positive,
+    # which is far worse here. Gating on "inside the floor" let a probe whose output
+    # went from clean JSON to prose-wrapped JSON pass: the baseline was genuinely
+    # near-deterministic, but the new chattier output varied enough *among itself*
+    # to widen the band past its own drift. Internal spread is only evidence about
+    # the baseline's behaviour when the current run is still doing the same thing.
     rescue_note = ""
-    deterministic_baseline = (
-        len(within) >= 3 and max(within) <= max(signal.floor, EPS)
+    uninformative_baseline = (
+        len(within) >= 3 and max(within) <= signal.floor * DEGENERATE_FRACTION
     )
-    if band.floored and deterministic_baseline and signal.band_override is None:
+    if band.floored and uninformative_baseline and signal.band_override is None:
         # Built from the current run's spread *alone*. Pooling it with the baseline
         # would not work: a dozen zeros swamp three real values and the median stays
         # at zero, so the band never actually widens. The premise of the rescue is

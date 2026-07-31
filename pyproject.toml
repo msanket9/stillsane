@@ -35,11 +35,16 @@ dependencies = [
     "numpy>=1.24",
     "pydantic>=2.6",
     "pyyaml>=6.0",
+    # The local embedding model, and a hard dependency rather than an extra: the
+    # default config asks for it, so shipping it as optional meant a plain
+    # `pip install stillsane` produced a tool that failed on its first command.
+    # It pulls in no torch.
+    "model2vec>=0.3",
 ]
 
 [project.optional-dependencies]
-# The local embedding model. Split out so the engine and its tests install and
-# run with no model download; `stillsane check` pulls it in on first semantic use.
+# Kept as a no-op alias so `pip install 'stillsane[semantic]'` still resolves for
+# anyone who followed the 0.0.2 instructions.
 semantic = ["model2vec>=0.3"]
 dev = ["pytest>=8.0", "ruff>=0.5"]
 
@@ -68,6 +73,13 @@ include = ["src/", "tests/", "README.md", "LICENSE", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The default run stays offline and free: no network, no API key, no model
+# download. `pytest -m network` opts into the tests that fetch the embedding
+# model, and CI runs both.
+addopts = "-m 'not network'"
+markers = [
+    "network: needs internet (downloads the embedding model on first run)",
+]
 
 [tool.ruff]
 line-length = 100

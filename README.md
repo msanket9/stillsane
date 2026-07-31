@@ -12,7 +12,7 @@ moved outside the range that probe normally varies by. It observes from outside,
 over plain HTTP. There is nothing to instrument, no SDK to import, no account, and
 no hosted service.
 
-> **Status: early — v0.0.2.** `init`, `baseline`, `check` and `watch` all work.
+> **Status: early — v0.0.3.** `init`, `baseline`, `check` and `watch` all work.
 > The LLM judge and probe auto-generation are not built yet, and the config format
 > may still change before 0.1. See [Status](#status).
 
@@ -156,9 +156,9 @@ Related decisions, since they are the ones that determine whether this is usable
 pip install stillsane
 ```
 
-Python 3.10+. Four dependencies (`httpx`, `numpy`, `pydantic`, `pyyaml`) and no
-torch. The local embedding model is a separate opt-in — see
-[Design constraints](#design-constraints).
+Python 3.10+, five dependencies, no torch. Everything needed to run is installed;
+the embedding model itself is fetched once on first use (~32MB) and cached — see
+[Design constraints](#design-constraints) if you need to stay fully offline.
 
 ```bash
 stillsane init             # write a starter config
