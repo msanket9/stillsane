@@ -61,6 +61,14 @@ def _signal_line(sv: SignalVerdict, paint: Painter) -> str:
     return row.rstrip()
 
 
+#: Signals that say nothing about what the model actually wrote. When only these
+#: move there is no textual change to show, and printing a before/after anyway
+#: invites the reader to hunt for a difference that is not the point -- a
+#: fingerprint-only alert would display `1240.5` against `1240.50` and imply the
+#: number moved.
+_NON_CONTENT_SIGNALS = frozenset({"fingerprint", "model_id", "latency_ms", "transport"})
+
+
 def _excerpt_block(verdict: ProbeVerdict, paint: Painter, width: int = 76) -> list[str]:
     """Before and after, stacked rather than side by side.
 
@@ -70,6 +78,8 @@ def _excerpt_block(verdict: ProbeVerdict, paint: Painter, width: int = 76) -> li
     if not (verdict.baseline_excerpt and verdict.observed_excerpt):
         return []
     if verdict.baseline_excerpt == verdict.observed_excerpt:
+        return []
+    if all(sv.signal in _NON_CONTENT_SIGNALS for sv in verdict.moved):
         return []
 
     lines = [""]

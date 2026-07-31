@@ -1,0 +1,115 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: lint + tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - run: pip install -e ".[dev]"
+
+      - run: ruff check src/ tests/
+
+      # The default suite is offline by construction: no network, no API key, no
+      # model download. If this ever starts needing any of them, that is a bug.
+      - run: pytest -q
+
+  embedder:
+    name: embedding model (network)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache the embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: stillsane-embedding-model
+
+      - run: pip install -e ".[dev]"
+
+      # Deselected from the default run because they download the model. They are
+      # the only coverage of the *default* embedder, so they have to run somewhere.
+      - run: pytest -q -m network
+
+  package:
+    name: clean install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache the embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: stillsane-embedding-model
+
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+
+      # This job exists because of a real escape. 0.0.2 shipped with the embedding
+      # model as an optional extra while the config default asked for it, so a
+      # fresh `pip install stillsane` produced a tool that failed on its first
+      # command. Every test passed: they ran from a source checkout with every
+      # dependency present. Only installing the built artifact into an empty
+      # environment and actually running it catches that class of bug.
+      - name: Install the wheel into a clean environment
+        run: |
+          python -m venv /tmp/clean
+          /tmp/clean/bin/pip install dist/*.whl
+          /tmp/clean/bin/stillsane --version
+
+      - name: Run the worked example end to end
+        working-directory: examples/invoice-extract
+        run: |
+          set -euo pipefail
+
+          /tmp/clean/bin/python mock_provider.py --mode stable &
+          MOCK=$!
+          # Wait for the port rather than sleeping a guessed interval.
+          for _ in $(seq 1 50); do
+            curl -sf -o /dev/null -X POST localhost:8899/v1/chat/completions -d '{}' && break
+            sleep 0.2
+          done
+
+          echo "--- healthy provider: expect exit 0 ---"
+          /tmp/clean/bin/stillsane check
+          kill $MOCK
+
+          /tmp/clean/bin/python mock_provider.py --mode drifted &
+          MOCK=$!
+          for _ in $(seq 1 50); do
+            curl -sf -o /dev/null -X POST localhost:8899/v1/chat/completions -d '{}' && break
+            sleep 0.2
+          done
+
+          echo "--- drifted provider: expect exit 1 ---"
+          if /tmp/clean/bin/stillsane check; then
+            echo "FAIL: drift went undetected against the committed baseline"
+            kill $MOCK
+            exit 1
+          fi
+          kill $MOCK
+        env:
+          NO_COLOR: "1"

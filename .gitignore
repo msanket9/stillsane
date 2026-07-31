@@ -15,5 +15,8 @@ build/
 # stillsane local state.
 # Baselines are deliberately NOT ignored: they are plain text, they diff like
 # code, and CI needs them in the repo to have anything to compare against.
-.stillsane/history.sqlite
-.stillsane/cache/
+# The `**/` prefix matters -- a pattern containing a slash is anchored to this
+# file's directory, so a bare `.stillsane/history.sqlite` would miss the copy
+# under examples/ and commit a binary that changes on every run.
+**/.stillsane/history.sqlite
+**/.stillsane/cache/

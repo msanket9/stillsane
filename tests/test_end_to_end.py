@@ -248,6 +248,32 @@ def test_report_names_what_moved(env):
     assert "baseline (v1" in text and "now:" in text
 
 
+def test_fingerprint_only_alert_shows_no_text_diff(env):
+    """Nothing the model wrote changed, so a before/after block would mislead.
+
+    The excerpts differ only in incidental formatting (`1240.5` vs `1240.50`), and
+    showing them next to a fingerprint alert reads as though the number moved.
+    """
+    config, store, history = env
+    run_baseline(config, store, STABLE, fingerprint="fp_old")
+    result = run_check(config, store, history, STABLE, fingerprint="fp_new")
+
+    text = render(result, colour=False)
+    assert result.level is Level.WARN
+    assert "fingerprint" in text
+    assert "baseline (v1" not in text and "now:" not in text
+
+
+def test_content_drift_still_shows_the_text_diff(env):
+    """The complement: suppressing the block must not suppress it when it matters."""
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    result = run_check(config, store, history, DRIFTED)
+
+    text = render(result, colour=False)
+    assert "baseline (v1" in text and "now:" in text
+
+
 def test_report_stays_quiet_on_a_pass(env):
     config, store, history = env
     run_baseline(config, store, STABLE)

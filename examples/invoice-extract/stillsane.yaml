@@ -1,0 +1,48 @@
+# Worked example: an invoice-extraction probe.
+#
+# Points at the bundled mock provider so it runs with no API key. To use it
+# against something real, replace the target below with your own endpoint --
+# nothing else in this file needs to change:
+#
+#   targets:
+#     - name: prod
+#       type: openai_compatible
+#       base_url: https://api.openai.com/v1
+#       model: gpt-4o-mini
+#       api_key_env: OPENAI_API_KEY
+#
+# Or point it at your deployed app rather than a model API:
+#
+#   targets:
+#     - name: prod
+#       type: http
+#       base_url: https://your-app.example.com
+#       path: /api/extract
+#       body: {document: "{{prompt}}"}
+#       response_path: data.reply
+
+targets:
+  - name: prod
+    type: openai_compatible
+    base_url: http://127.0.0.1:8899/v1
+    model: mock-model-v1
+    watch_fingerprint: true
+
+probes:
+  - id: extract_invoice
+    prompt: |
+      Extract the total and the due date from this invoice as JSON with keys
+      "total" and "due_date". Reply with JSON only.
+
+      Invoice #4471, issued 2026-06-01, payable within 30 days.
+      Subtotal 1150.00 USD, tax 90.50 USD.
+    baseline_samples: 5   # paid once; this is where the variance band comes from
+    check_samples: 3      # paid every run; only needs to locate a median
+    checks:
+      - valid_json
+      - has_keys: [total, due_date]
+
+# Uncomment to get notified rather than only failing the build.
+# alerts:
+#   webhook: https://example.com/hook
+#   fail_on_warn: false

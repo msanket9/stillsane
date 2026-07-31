@@ -1,0 +1,43 @@
+# Copy this into `.github/workflows/` in your own repo.
+#
+# Commit your `.stillsane/baselines/` directory alongside it -- the workflow needs
+# something to compare against, and baselines are plain text that diffs like code.
+
+name: drift
+
+on:
+  schedule:
+    # Every morning. A daily cadence is the point: provider-side model changes
+    # arrive without warning, and finding out within a day is the whole product.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+  # Uncomment to also gate pull requests, catching prompt edits before they land.
+  # pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The embedding model is ~32MB and identical between runs.
+      - name: Cache the embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: stillsane-embedding-model
+
+      - run: pip install stillsane
+
+      - name: Check for drift
+        run: stillsane check
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      # `check` exits 1 on drift, which fails the job above. If you would rather be
+      # told than blocked, set `alerts.webhook` in your config and add
+      # `continue-on-error: true` to the step.
