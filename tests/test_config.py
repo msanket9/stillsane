@@ -136,6 +136,17 @@ def test_sample_counts_do_not_invalidate_the_baseline():
     assert config_hash(a, t) == config_hash(b, t)
 
 
+def test_switching_embedder_invalidates_the_baseline():
+    """A stored variance pool only means anything on the scale that produced it.
+
+    Without this the pool stays put while every new distance arrives on a different
+    scale, so the bands stop matching what they are compared against and the tool
+    reports drift, or misses it, with full confidence.
+    """
+    probe, target = _pair()
+    assert config_hash(probe, target, "model2vec") != config_hash(probe, target, "hashing")
+
+
 def test_renaming_a_target_does_not_invalidate_the_baseline():
     probe, prod = _pair()
     renamed = TargetConfig(name="production", base_url="https://a/v1", model="m")

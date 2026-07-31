@@ -18,6 +18,68 @@ no hosted service.
 
 ---
 
+## What it looks like
+
+A probe that extracts a total and a due date as JSON. The model was updated, and
+it started explaining itself. The numbers are still correct and still present —
+but every caller doing `json.loads(response)` is now throwing.
+
+```
+DRIFT  extract_invoice @ prod
+  semantic_distance           0.133  band <=0.03745       z=+17.3
+  length_chars                  106  band 36..52          z=+23.2
+  completion_tokens              26  band 7..15           z=+11.2
+  valid_json               0% valid  band >=1
+  5 other signal(s) unchanged
+
+  baseline (v1, 2026-07-31):
+    {"due_date": "2026-07-01", "total": 1240.50}
+  now:
+    Sure! I found the following:
+    {"total": 1240.5, "due_date": "2026-07-01"}
+    Happy to help with more invoices.
+
+------------------------------------------------------------
+1 drift   ->  DRIFT
+```
+
+Exit code 1, so this fails a build. Nothing errored, nothing was slower, and no
+conventional monitor would have noticed.
+
+That `band <=0.03745` was not a number anyone chose. The baseline watched this
+probe vary in whitespace, number formatting and key order, and learned how much
+that is worth. The prose-wrapped version sits seventeen times further out. A
+chattier probe would have learned a band twenty times wider and stayed silent
+through the same rewording.
+
+You can run exactly this in about thirty seconds, with no API key, from
+[`examples/invoice-extract/`](examples/invoice-extract/).
+
+---
+
+## Quickstart
+
+```bash
+pip install stillsane
+```
+
+```bash
+stillsane init       # write a starter config, then point it at your endpoint
+```
+
+```bash
+stillsane baseline   # capture what "normal" looks like. Explicit, never automatic.
+```
+
+```bash
+stillsane check      # compare against it. Non-zero exit on drift.
+```
+
+Put `stillsane check` on a schedule in CI and you are done — see
+[In CI](#in-ci) for a workflow you can copy.
+
+---
+
 ## The problem
 
 Three ways an LLM app degrades without ever erroring:
@@ -130,6 +192,19 @@ The headline number is **z**: how far behaviour moved in units of that probe's o
 normal variation. "Moved 6.2x further than this probe usually varies" is a
 sentence you can act on. A p-value is not.
 
+**On calling it `z`.** It is computed as `(observed − median) / (1.4826 × MAD)`,
+which is a *robust analogue* of a standard score, not a standard score. The
+1.4826 makes a MAD comparable to a standard deviation for normally distributed
+data, and a distribution of distances is emphatically not normal — it is bounded
+below at zero and right-skewed. So `z` here assumes no distribution at all: it is
+a scale-free measure of how far outside normal something sits, and **it does not
+convert to a probability**. `z=6` is not a one-in-a-billion event. The thresholds
+(`warn_k: 3`, `drift_k: 6`) are calibrated against real probe behaviour, not
+derived from Gaussian tails, and they are config knobs precisely because the right
+values are an empirical question. The Mann-Whitney p-value reported alongside is
+distribution-free and does carry its usual meaning — which is exactly why it is
+supporting evidence and never the gate.
+
 Related decisions, since they are the ones that determine whether this is usable:
 
 - **Robust statistics throughout.** Median and MAD, not mean and standard
@@ -152,22 +227,12 @@ Related decisions, since they are the ones that determine whether this is usable
 
 ## Usage
 
-```bash
-pip install stillsane
-```
-
 Python 3.10+, five dependencies, no torch. Everything needed to run is installed;
 the embedding model itself is fetched once on first use (~32MB) and cached — see
 [Design constraints](#design-constraints) if you need to stay fully offline.
 
-```bash
-stillsane init             # write a starter config
-stillsane baseline         # capture the baseline (explicit, never automatic)
-stillsane check            # run once, compare, non-zero exit on drift
-stillsane watch            # scheduled mode
-```
-
-`watch` is a sleep loop and is honest about being one. cron or CI does this better:
+Beyond the three commands in the [quickstart](#quickstart) there is `stillsane
+watch`, a sleep loop that is honest about being one. cron or CI does this better:
 they survive reboots, they log, and they can tell you when the job itself stopped
 running, which a bare process cannot do for itself.
 
@@ -232,29 +297,21 @@ tool-call drift says nothing about a probe that never calls a tool.
 
 ### In CI
 
-```yaml
-name: drift
-on:
-  schedule:
-    - cron: "0 6 * * *"
-  workflow_dispatch:
+Copy
+[`examples/invoice-extract/github-actions.yml`](examples/invoice-extract/github-actions.yml)
+into `.github/workflows/`. It runs `stillsane check` every morning, caches the
+embedding model between runs, and fails the job on drift.
 
-jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install stillsane
-      - run: stillsane check
-        env:
-          PROVIDER_API_KEY: ${{ secrets.PROVIDER_API_KEY }}
-```
+Kept as one file rather than pasted here as a second copy, because two copies of a
+workflow drift apart and the one in the README is the one nobody re-tests.
 
-Commit `.stillsane/baselines/` so the workflow has something to compare against —
-they are plain text and diff like code. Leave `.stillsane/history.sqlite` out.
+Two things it relies on:
+
+- **Commit `.stillsane/baselines/`.** The workflow needs something to compare
+  against. They are plain text and diff like code. Leave
+  `.stillsane/history.sqlite` out — it is a binary that changes every run.
+- **A daily schedule is the point.** Provider-side model changes arrive without
+  warning; finding out within a day is the entire product.
 
 ---
 
@@ -279,9 +336,15 @@ this README's word for it:
 pip install -e ".[dev]" && pytest
 ```
 
+There is a runnable worked example in
+[`examples/invoice-extract/`](examples/invoice-extract/), with a committed baseline
+and a mock provider, so you can watch a real regression get caught without an API
+key. CI builds the wheel, installs it into an empty environment and runs that
+example on every push, which is how a broken install gets caught before a release
+rather than after one.
+
 Not built yet: the LLM judge (the report has a slot for its one-line verdict, but
-nothing calls it), probe auto-generation from logs, and a worked example checked
-into the repo.
+nothing calls it) and probe auto-generation from logs.
 
 **Expect breakage before 0.1.** The config format is not frozen. If a field is
 renamed you will get a validation error naming it, not a silent misread — but a

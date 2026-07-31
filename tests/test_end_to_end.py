@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 from stillsane import cli
-from stillsane.alerts import exit_code_for, payload_for, slack_payload
+from stillsane.alerts import exit_code_for, payload_for, send, slack_payload
 from stillsane.config import Config
 from stillsane.models import Level
 from stillsane.report import render
@@ -248,6 +248,31 @@ def test_report_names_what_moved(env):
     assert "baseline (v1" in text and "now:" in text
 
 
+def test_an_actionable_error_actually_reaches_the_report(env):
+    """The message is the whole payload for a pseudo-signal.
+
+    These carry no measurement, so the numeric columns render blank and the line
+    became a lonely `baseline` with the instruction dropped -- an error telling the
+    user nothing at all.
+    """
+    config, store, history = env
+    result = run_check(config, store, history, STABLE)  # no baseline captured
+
+    text = render(result, colour=False)
+    assert result.level is Level.ERROR
+    assert "stillsane baseline" in text, text
+
+
+def test_a_stale_baseline_says_so_in_the_report(env):
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    edited = Config.model_validate(
+        {**CONFIG, "probes": [{**CONFIG["probes"][0], "prompt": "Something else."}]}
+    )
+    text = render(run_check(edited, store, history, STABLE), colour=False)
+    assert "recapture" in text and "different" in text
+
+
 def test_fingerprint_only_alert_shows_no_text_diff(env):
     """Nothing the model wrote changed, so a before/after block would mislead.
 
@@ -318,6 +343,61 @@ def test_slack_payload_is_bounded(env):
     result = run_check(config, store, history, DRIFTED)
     text = slack_payload(result)["text"]
     assert "stillsane: DRIFT" in text and len(text) < 4000
+
+
+def test_alerts_are_delivered_to_both_sinks(env, monkeypatch):
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    result = run_check(config, store, history, DRIFTED)
+
+    posted = []
+    monkeypatch.setattr(
+        "stillsane.alerts.httpx.post",
+        lambda url, **kw: posted.append((url, kw.get("json"))) or _Ok(),
+    )
+    send(result, "https://example.com/hook", "https://hooks.slack.test/x")
+
+    assert [url for url, _ in posted] == [
+        "https://example.com/hook",
+        "https://hooks.slack.test/x",
+    ]
+    assert posted[0][1]["level"] == "drift"
+    assert "stillsane: DRIFT" in posted[1][1]["text"]
+
+
+def test_a_dead_webhook_does_not_fail_the_check(env, monkeypatch, capsys):
+    """Alerting is best-effort by design, and this is the promise being kept.
+
+    The check already did its job. Losing that result because the notification
+    could not be delivered would be strictly worse than the notification failing.
+    """
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    result = run_check(config, store, history, DRIFTED)
+
+    def explode(url, **kw):
+        raise httpx.ConnectError("no route to host")
+
+    monkeypatch.setattr("stillsane.alerts.httpx.post", explode)
+    send(result, "https://unreachable.test/hook", None)  # must not raise
+
+    assert "could not deliver alert" in capsys.readouterr().err
+
+
+def test_a_webhook_returning_an_error_is_reported_not_raised(env, monkeypatch, capsys):
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    result = run_check(config, store, history, DRIFTED)
+
+    monkeypatch.setattr("stillsane.alerts.httpx.post", lambda url, **kw: _Ok(500))
+    send(result, "https://example.com/hook", None)
+
+    assert "HTTP 500" in capsys.readouterr().err
+
+
+class _Ok:
+    def __init__(self, status_code: int = 200) -> None:
+        self.status_code = status_code
 
 
 def test_fail_on_warn_promotes_the_exit_code(env):

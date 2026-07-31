@@ -205,17 +205,25 @@ class Config(BaseModel):
         return out
 
 
-def config_hash(probe: ProbeConfig, target: TargetConfig) -> str:
-    """Fingerprint of everything that legitimately changes a probe's output.
+def config_hash(probe: ProbeConfig, target: TargetConfig, embedder: str = "model2vec") -> str:
+    """Fingerprint of everything that would invalidate a stored baseline.
 
     Sample counts are excluded deliberately: asking for more samples does not
     change what the model says, so it should not throw away a baseline.
+
+    The embedder *is* included, even though it changes nothing about the output.
+    A baseline stores a variance pool of measured distances, and those numbers only
+    mean anything on the scale that produced them. Switching embedder leaves the
+    stored pool intact while every new distance arrives on a different scale, so the
+    bands silently stop matching the measurements they are compared against and the
+    verdicts are confidently wrong. Better to force a recapture.
     """
     payload = {
         "prompt": probe.prompt,
         "system": probe.system,
         "checks": probe.checks,
         "target": target.identity(),
+        "embedder": embedder,
     }
     blob = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]

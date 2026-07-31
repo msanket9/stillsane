@@ -25,6 +25,16 @@ from .store import BaselineStore, History
 
 DEFAULT_CONFIG = "stillsane.yaml"
 
+#: Exit codes in increasing order of severity. The codes themselves are chosen for
+#: their meaning to CI (1 = the build should fail) rather than to be ordered, so
+#: anything comparing two of them has to go through this.
+_SEVERITY = (
+    EXIT_CODES[Level.PASS],
+    EXIT_CODES[Level.WARN],
+    EXIT_CODES[Level.DRIFT],
+    EXIT_CODES[Level.ERROR],
+)
+
 STARTER_CONFIG = """\
 # stillsane -- drift canary for a deployed LLM app.
 # Capture a baseline once, then run `stillsane check` on a schedule.
@@ -148,7 +158,11 @@ def cmd_watch(args: argparse.Namespace) -> int:
         while True:
             started = time.monotonic()
             code = _run_check(args)
-            worst = max(worst, code)
+            # Ranked by severity, not by numeric value. The exit codes are not
+            # ordered -- DRIFT is 1 and WARN is 2 -- so `max()` on the raw numbers
+            # would let a later warning mask an earlier drift in the summary.
+            if _SEVERITY.index(code) > _SEVERITY.index(worst):
+                worst = code
             if args.once:
                 return code
             elapsed = time.monotonic() - started

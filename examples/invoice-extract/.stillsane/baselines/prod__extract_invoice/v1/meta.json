@@ -1,6 +1,6 @@
 {
-  "created": "2026-07-31T01:46:41+00:00",
-  "config_hash": "a832ac3df8415403",
+  "created": "2026-07-31T01:55:51+00:00",
+  "config_hash": "09f45981d8f2fb76",
   "target": "prod",
   "probe": "extract_invoice",
   "n": 5,

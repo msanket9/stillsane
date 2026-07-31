@@ -51,7 +51,7 @@ def plans_for(config: Config) -> list[Plan]:
             probe=probe,
             target_config=target_config,
             target=build_target(target_config),
-            expected_hash=config_hash(probe, target_config),
+            expected_hash=config_hash(probe, target_config, config.embedder),
         )
         for probe, target_config in config.pairs()
     ]
@@ -169,8 +169,9 @@ async def check(
             verdicts.append(
                 _error_verdict(
                     plan,
-                    f"baseline v{baseline.version} was captured for a different prompt, "
-                    "model or check set; run `stillsane baseline` to recapture",
+                    f"baseline v{baseline.version} was captured under a different "
+                    "prompt, model, check set or embedder; run `stillsane baseline` "
+                    "to recapture",
                 )
             )
         elif not baseline.usable:

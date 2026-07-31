@@ -52,7 +52,7 @@ DRIFT  extract_invoice @ prod
   5 other signal(s) unchanged
 
   baseline (v1, 2026-07-31):
-    {"total": 1240.50, "due_date": "2026-07-01"}
+    {"due_date": "2026-07-01", "total": 1240.50}
   now:
     Sure! I found the following:
     {"total": 1240.5, "due_date": "2026-07-01"}

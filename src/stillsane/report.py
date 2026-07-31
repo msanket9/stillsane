@@ -55,7 +55,16 @@ def _signal_line(sv: SignalVerdict, paint: Painter) -> str:
     band = f"band {sv.band.describe()}" if sv.band else ""
     effect = f"z={sv.z:+.1f}" if sv.z is not None else ""
 
-    row = f"  {sv.signal:<20} {observed:>12}  {band:<20} {effect:<8}"
+    if observed or band or effect:
+        row = f"  {sv.signal:<20} {observed:>12}  {band:<20} {effect:<8}"
+    else:
+        # Pseudo-signals -- a missing baseline, a stale config hash, a dead endpoint
+        # -- carry no measurement, so the columns above render as an empty line with
+        # a lonely word on it. For these the detail *is* the report, and it is the
+        # part that tells the user what to do next. Dropping it left `stillsane
+        # check` printing "ERROR ... baseline" and nothing else.
+        row = f"  {sv.signal}: {sv.detail}"
+
     if sv.level is not Level.PASS:
         row = paint.level(row, sv.level)
     return row.rstrip()

@@ -24,6 +24,18 @@ normally varies" is a sentence a developer can act on at 3am.
 Robust statistics throughout -- median and MAD rather than mean and stdev --
 because at the sample counts anyone will pay for (N=5), one weird sample
 dominates a stdev and does not budge a MAD.
+
+A caveat on the name, because it invites a fair objection. `z` here is
+`(observed - median) / (1.4826 * MAD)`, a robust *analogue* of a standard score
+rather than a standard score. The 1.4826 is the constant that makes a MAD
+comparable to a standard deviation for normally distributed data, and a
+distribution of distances is not normal -- it is bounded below at zero and
+right-skewed. Nothing downstream assumes otherwise: `z` is used purely as a
+scale-free "how far outside normal is this", it is never converted to a
+probability, and `warn_k`/`drift_k` are calibrated against observed probe
+behaviour rather than derived from Gaussian tails. The Mann-Whitney statistic
+below is distribution-free and does carry its usual meaning, which is why it is
+allowed to corroborate but never to decide.
 """
 
 from __future__ import annotations
