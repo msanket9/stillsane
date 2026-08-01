@@ -111,6 +111,17 @@ class ProbeConfig(BaseModel):
             data.setdefault("baseline_samples", data.pop("samples"))
         return data
 
+    @field_validator("checks", mode="before")
+    @classmethod
+    def _empty_checks_are_no_checks(cls, v: Any) -> Any:
+        """`checks:` with nothing under it parses as null, not an empty list.
+
+        It is an easy thing to leave behind while editing, and the probe is
+        perfectly valid without any checks, so treat it as none rather than
+        rejecting the file over whitespace.
+        """
+        return [] if v is None else v
+
     @field_validator("baseline_samples")
     @classmethod
     def _enough_for_variance(cls, v: int) -> int:
@@ -140,6 +151,46 @@ class ThresholdConfig(BaseModel):
         return BandConfig(**self.model_dump())
 
 
+class JudgeConfig(BaseModel):
+    """The optional LLM judge.
+
+    Its own endpoint block rather than a flag on a target, because the model you
+    want explaining a regression is rarely the model you are monitoring. Judging
+    with the same deployment you are watching means a provider-side change moves
+    both the thing being measured and the instrument measuring it.
+    """
+
+    base_url: str
+    model: str
+    api_key_env: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+    timeout_s: float = 60.0
+    #: Zero by default. A judge that phrases its answer differently every run adds
+    #: noise to a tool whose entire job is telling signal from noise.
+    temperature: float = 0.0
+    max_tokens: int = 300
+
+    #: Whether the judge may soften a verdict it considers cosmetic. Off by default.
+    #: An escalation is a second opinion agreeing with the maths; a de-escalation
+    #: overrides a band that was learned from the probe's own measured behaviour, on
+    #: the say-so of a model that saw two samples. Useful for cutting noise once you
+    #: trust it, but it should be a decision rather than a default.
+    can_downgrade: bool = False
+
+    def to_target(self) -> TargetConfig:
+        return TargetConfig(
+            name="__judge__",
+            type="openai_compatible",
+            base_url=self.base_url,
+            model=self.model,
+            api_key_env=self.api_key_env,
+            headers=self.headers,
+            timeout_s=self.timeout_s,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+        )
+
+
 class AlertConfig(BaseModel):
     webhook: str | None = None
     slack_webhook: str | None = None
@@ -153,6 +204,9 @@ class Config(BaseModel):
     probes: list[ProbeConfig]
     thresholds: ThresholdConfig = Field(default_factory=ThresholdConfig)
     alerts: AlertConfig = Field(default_factory=AlertConfig)
+    #: Opt-in. Costs money, so it only runs on probes that already failed their
+    #: band, which on a healthy day is none of them.
+    judge: JudgeConfig | None = None
     #: `model2vec` (default, needs a one-time 32MB download) or `hashing`
     #: (fully offline, weaker at spotting meaning-preserving rewrites).
     embedder: Literal["model2vec", "hashing"] = "model2vec"

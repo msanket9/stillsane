@@ -12,8 +12,7 @@ moved outside the range that probe normally varies by. It observes from outside,
 over plain HTTP. There is nothing to instrument, no SDK to import, no account, and
 no hosted service.
 
-> **Status: early — v0.0.3.** `init`, `baseline`, `check` and `watch` all work.
-> The LLM judge and probe auto-generation are not built yet, and the config format
+> **Status: early, v0.0.4.** Everything described below works. The config format
 > may still change before 0.1. See [Status](#status).
 
 ---
@@ -21,7 +20,7 @@ no hosted service.
 ## What it looks like
 
 A probe that extracts a total and a due date as JSON. The model was updated, and
-it started explaining itself. The numbers are still correct and still present —
+it started explaining itself. The numbers are still correct and still present,
 but every caller doing `json.loads(response)` is now throwing.
 
 ```
@@ -75,7 +74,7 @@ stillsane baseline   # capture what "normal" looks like. Explicit, never automat
 stillsane check      # compare against it. Non-zero exit on drift.
 ```
 
-Put `stillsane check` on a schedule in CI and you are done — see
+Put `stillsane check` on a schedule in CI and you are done. See
 [In CI](#in-ci) for a workflow you can copy.
 
 ---
@@ -98,7 +97,7 @@ Quality is worse. Nobody gets paged.
 
 This is the same failure mode as a drifting sensor on unattended infrastructure: a
 crash is loud and you find out immediately, but a plausible-looking wrong number
-gets believed. The fix there was synthetic monitoring — walk the whole pipeline on
+gets believed. The fix there was synthetic monitoring: walk the whole pipeline on
 a schedule, validate what comes back, alert before a human notices. stillsane is
 that, pointed at an LLM.
 
@@ -106,12 +105,13 @@ that, pointed at an LLM.
 
 ## Should you use this?
 
-Probably not, if you already have something. Be honest with yourself here:
+Probably not, if you already have something:
 
 - **You want to know whether a prompt is good before you ship it.** Use a
   pre-ship eval framework. There are several good open-source ones, and stillsane
-  will not help you — this is not false modesty, it is a different problem, and
-  tools built for it solve it better than a tool of this scope ever will.
+  will not help you. That is not false modesty. Pre-ship evaluation is a different
+  problem, and tools built for it solve it better than a tool of this scope ever
+  will.
 - **You already run a tracing or eval platform.** You have evaluator scores on
   real production traffic. Watch those. Adding stillsane buys you
   provider-fingerprint watching and not much else.
@@ -145,7 +145,7 @@ they are a rough shape, not a specification.
 
 **Where the alternatives win outright:** provider coverage, assertion breadth,
 dataset-driven evaluation, red teaming, and maturity. Several eval frameworks also
-document a drift workflow — save a baseline, re-run on a schedule, compare — and if
+document a drift workflow (save a baseline, re-run on a schedule, compare), and if
 you are happy writing the comparison logic yourself, that gets you a good deal of
 what stillsane does.
 
@@ -164,8 +164,8 @@ fixed threshold. That fails immediately, because probes do not share a variance.
 
 A temperature-0 JSON extraction returns near-identical text every time. A
 summarisation probe legitimately rewords itself on every single call. One fixed
-threshold either misses real drift on the first or fires constantly on the second
-— and a tool that fires constantly gets uninstalled inside a week.
+threshold either misses real drift on the first or fires constantly on the second,
+and a tool that fires constantly gets uninstalled inside a week.
 
 So stillsane learns the band per probe, from the probe's own behaviour:
 
@@ -173,8 +173,8 @@ So stillsane learns the band per probe, from the probe's own behaviour:
   That distribution is the probe's intrinsic variance.
 - At check time it captures M samples and measures the distance from each baseline
   sample to each new one.
-- With no drift, those two sets of distances are drawn from the same distribution
-  — both are "how far apart are two independent draws". With drift, the second set
+- With no drift, those two sets of distances are drawn from the same distribution.
+  Both are "how far apart are two independent draws". With drift, the second set
   shifts up.
 
 From this repo's own test suite, same code and no configuration:
@@ -195,14 +195,14 @@ sentence you can act on. A p-value is not.
 **On calling it `z`.** It is computed as `(observed − median) / (1.4826 × MAD)`,
 which is a *robust analogue* of a standard score, not a standard score. The
 1.4826 makes a MAD comparable to a standard deviation for normally distributed
-data, and a distribution of distances is emphatically not normal — it is bounded
+data, and a distribution of distances is emphatically not normal. It is bounded
 below at zero and right-skewed. So `z` here assumes no distribution at all: it is
 a scale-free measure of how far outside normal something sits, and **it does not
 convert to a probability**. `z=6` is not a one-in-a-billion event. The thresholds
 (`warn_k: 3`, `drift_k: 6`) are calibrated against real probe behaviour, not
 derived from Gaussian tails, and they are config knobs precisely because the right
 values are an empirical question. The Mann-Whitney p-value reported alongside is
-distribution-free and does carry its usual meaning — which is exactly why it is
+distribution-free and does carry its usual meaning, which is exactly why it is
 supporting evidence and never the gate.
 
 Related decisions, since they are the ones that determine whether this is usable:
@@ -228,7 +228,7 @@ Related decisions, since they are the ones that determine whether this is usable
 ## Usage
 
 Python 3.10+, five dependencies, no torch. Everything needed to run is installed;
-the embedding model itself is fetched once on first use (~32MB) and cached — see
+the embedding model itself is fetched once on first use (~32MB) and cached. See
 [Design constraints](#design-constraints) if you need to stay fully offline.
 
 Beyond the three commands in the [quickstart](#quickstart) there is `stillsane
@@ -283,8 +283,84 @@ beyond the probe calls themselves.
 
 Several signals are always on and need no configuration: semantic distance, JSON
 shape, tool-call shape, length, completion tokens, cost, latency, provider
-fingerprint and model id. Signals that do not apply to a probe stay silent —
+fingerprint and model id. Signals that do not apply to a probe stay silent, so
 tool-call drift says nothing about a probe that never calls a tool.
+
+### Generating probes from logs
+
+Writing twenty probes by hand is the reason most people never start, and the ones
+you would write are the ones you already think about. The prompts actually hitting
+your endpoint are a better sample, and you already have them:
+
+```bash
+stillsane init --from-logs requests.jsonl
+```
+
+```
+Read requests.jsonl
+  61 distinct prompt(s), clustered into 3
+```
+
+That number is the point. Real logs are enormously repetitive: a thousand requests
+are usually a handful of shapes with different payloads stuffed into them. Near
+duplicates are clustered by meaning using the embedder that already ships for
+drift detection, and the most frequent variant of each cluster becomes the probe,
+annotated with how often it appeared.
+
+Reads JSONL, a JSON array, or a directory of `.json` files. Each record can be an
+OpenAI-style request body, a bare `{"prompt": ...}`, or either of those wrapped
+under `request`, `body` or `payload`. Malformed lines are skipped, because
+refusing a 10,000-line log over one line truncated mid-write would make the
+feature useless on exactly the files it exists for.
+
+**Checks are emitted commented out.** Guessing that a probe returns JSON and being
+wrong would fail your first baseline and teach you the tool is broken. You get the
+prompts and a suggestion; you decide what holds.
+
+| Flag | |
+| --- | --- |
+| `--limit N` | Most probes to emit, most frequent first. Default 20. |
+| `--merge-distance D` | How aggressively to cluster. Higher merges more. Default 0.12. |
+| `--probes-only` | Emit just the `probes:` block, for pasting into a config you already have. |
+| `--embedder hashing` | Cluster without the embedding model, fully offline. |
+
+### The judge (optional)
+
+Add a `judge` block and a probe that crosses its band gets one extra call, to
+explain in a sentence what changed:
+
+```yaml
+judge:
+  base_url: https://api.openai.com/v1
+  model: gpt-4o-mini
+  api_key_env: OPENAI_API_KEY
+```
+
+```
+DRIFT  extract_invoice @ prod
+  semantic_distance           0.133  band <=0.03745       z=+17.3
+  valid_json               0% valid  band >=1
+  ...
+  -> breaking: Still valid JSON, but now wrapped in conversational prose.
+```
+
+**It only runs on probes that already failed their band**, so on a day when
+nothing drifted it is never called and costs nothing. That tiering is the point:
+structural checks are free, embeddings are free after the one-time download, and
+the only paid layer fires when something is already known to be wrong.
+
+Two deliberate limits:
+
+- **It is advisory.** By default it explains and nothing else. The verdict came
+  from a band learned out of the probe's own measured behaviour, and a model that
+  saw two samples does not get to overrule that. Set `can_downgrade: true` to let
+  it soften a drift it considers purely cosmetic, once you trust it.
+- **It gets its own endpoint.** Not a flag on a target, because judging with the
+  same deployment you are watching means a provider-side change moves both the
+  thing being measured and the instrument measuring it.
+
+If the judge is unreachable or answers with something unparseable, the run is
+unaffected: the verdict stands and the explanation is simply absent.
 
 ### Exit codes
 
@@ -293,7 +369,7 @@ tool-call drift says nothing about a probe that never calls a tool.
 | `0` | No drift. |
 | `1` | Drift. |
 | `2` | Warning only. Does not fail a build unless `fail_on_warn: true`. |
-| `3` | Error — the endpoint failed, or there is no usable baseline. |
+| `3` | Error. The endpoint failed, or there is no usable baseline. |
 
 ### In CI
 
@@ -309,7 +385,7 @@ Two things it relies on:
 
 - **Commit `.stillsane/baselines/`.** The workflow needs something to compare
   against. They are plain text and diff like code. Leave
-  `.stillsane/history.sqlite` out — it is a binary that changes every run.
+  `.stillsane/history.sqlite` out, since it is a binary that changes every run.
 - **A daily schedule is the point.** Provider-side model changes arrive without
   warning; finding out within a day is the entire product.
 
@@ -319,16 +395,18 @@ Two things it relies on:
 
 Working end to end:
 
-- The comparison engine — variance bands, effect sizes, verdict aggregation
-- Signals — structural, semantic, JSON shape, tool-call shape, fingerprint,
+- The comparison engine: variance bands, effect sizes, verdict aggregation
+- Signals: structural, semantic, JSON shape, tool-call shape, fingerprint,
   tokens, cost, latency
 - Variance pooling, with the caps that stop gradual drift widening its own band
-- Targets — OpenAI-compatible and arbitrary HTTP
+- Targets: OpenAI-compatible and arbitrary HTTP
 - Versioned baseline store, SQLite history, and the config hash that refuses a
   stale comparison
 - `init`, `baseline`, `check`, `watch`, the report renderer, and webhook/Slack alerts
+- The optional LLM judge, which only runs on probes that already failed their band
+- `init --from-logs`, which clusters your logged prompts into a probe set
 
-The test suite runs with no network, no API key and no model download — it ships
+The test suite runs with no network, no API key and no model download. It ships
 in the sdist, so you can verify the variance model yourself rather than taking
 this README's word for it:
 
@@ -343,11 +421,9 @@ key. CI builds the wheel, installs it into an empty environment and runs that
 example on every push, which is how a broken install gets caught before a release
 rather than after one.
 
-Not built yet: the LLM judge (the report has a slot for its one-line verdict, but
-nothing calls it) and probe auto-generation from logs.
 
 **Expect breakage before 0.1.** The config format is not frozen. If a field is
-renamed you will get a validation error naming it, not a silent misread — but a
+renamed you will get a validation error naming it, not a silent misread, but a
 version pin is wise for now.
 
 ---
@@ -373,8 +449,8 @@ baseline. Existing tools measure quality; this measures change.
 - Point it at an endpoint with a few prompts and get value in under five minutes.
 - Near-zero running cost. Local embeddings by default, judge opt-in and only on
   suspicion.
-- No internet dependency except the target endpoint — with one exception, noted
-  honestly: the default embedding model is a 32MB one-time download. Set
+- No internet dependency except the target endpoint, with one exception stated
+  plainly: the default embedding model is a 32MB one-time download. Set
   `embedder: hashing` to stay fully offline, at the cost of a weaker signal on
   rewrites that preserve meaning.
 - Plain text config, so it lives in git.

@@ -28,6 +28,8 @@ from .compare import (
     within_run_evidence,
 )
 from .config import Config, ProbeConfig, TargetConfig, config_hash
+from .judge import Judge, JudgeVerdict
+from .judge import apply as judge_apply
 from .models import Level, ProbeVerdict, RunResult, Sample, SignalVerdict
 from .signals import build_signals, default_embedder
 from .signals.base import PairwiseSignal
@@ -139,6 +141,38 @@ async def capture_baseline(
     return written
 
 
+async def _run_judge(
+    config: Config, verdicts: list[ProbeVerdict], client: httpx.AsyncClient | None
+) -> None:
+    """Ask the judge about probes that already failed their band, and only those.
+
+    This is where the tiering pays off: on a run where nothing drifted the loop
+    below has nothing to iterate over and not a single token is spent.
+    """
+    if config.judge is None:
+        return
+    suspects = [v for v in verdicts if v.level in (Level.WARN, Level.DRIFT)]
+    if not suspects:
+        return
+
+    judge = Judge(config.judge)
+    owned = client is None
+    client = client or httpx.AsyncClient()
+    try:
+        results = await asyncio.gather(
+            *(judge.assess(v, client) for v in suspects), return_exceptions=True
+        )
+    finally:
+        if owned:
+            await client.aclose()
+
+    for verdict, result in zip(suspects, results, strict=True):
+        # A judge that fell over must not take the run down with it. The verdict
+        # came from measurements and stands on its own; the judge only adds prose.
+        judge_apply(verdict, result if isinstance(result, JudgeVerdict) else None,
+                    config.judge.can_downgrade)
+
+
 async def check(
     config: Config,
     store: BaselineStore,
@@ -207,6 +241,8 @@ async def check(
                         pool_from_run(evidence, baseline.pooled, baseline.anchors),
                         baseline.anchors,
                     )
+
+        await _run_judge(config, verdicts, client)
 
     # Preserve config order rather than completion order, so the report reads the
     # same way as the file the user wrote.

@@ -3,8 +3,8 @@
 A probe that asks a model to pull a total and a due date out of an invoice as
 JSON, and a baseline captured against a healthy endpoint.
 
-It ships with a mock provider so you can watch the whole thing work — including a
-real regression being caught — in about thirty seconds, with no API key and no
+It ships with a mock provider so you can watch the whole thing work, including a
+real regression being caught, in about thirty seconds with no API key and no
 spend. The baseline in `.stillsane/baselines/` is committed, which is how you
 would run this in CI too.
 
@@ -66,7 +66,7 @@ Exit code 1, so this fails a build.
 
 Note what the band did. The baseline saw three phrasings that differ in
 whitespace, number formatting and key order, and learned that a distance up to
-`0.037` is normal for this probe. The prose-wrapped version sits at `0.133` —
+`0.037` is normal for this probe. The prose-wrapped version sits at `0.133`,
 seventeen times further out than this probe ever normally varies. Nobody chose
 that threshold; it came from the probe's own behaviour.
 
@@ -80,7 +80,7 @@ the envelope broke, and the report can tell you which.
 python mock_provider.py --mode newfp
 ```
 
-Identical output, but the provider reports a different `system_fingerprint` — the
+Identical output, but the provider reports a different `system_fingerprint`. The
 backend model changed underneath a version string that did not.
 
 ```bash
@@ -97,8 +97,8 @@ WARN   extract_invoice @ prod
 ```
 
 Exit code 2. There is no before/after block here because nothing the model wrote
-changed — printing one would only invite you to hunt for a difference that is not
-the point. This is information, not a fault: the model moved, the output has not
+changed, and printing one would only invite you to hunt for a difference that is
+not the point. This is information, not a fault: the model moved, the output has not
 (yet). It is the one form of drift you cannot otherwise see, and the reason to
 look at your probes before your users do. Set `escalate_fingerprint: true` on the
 target to make it fail instead.
@@ -126,4 +126,4 @@ Two things worth knowing when you do:
 Copy [`github-actions.yml`](github-actions.yml) into `.github/workflows/` in your
 own repo. It runs `stillsane check` every morning and fails the job on drift.
 Commit your `.stillsane/baselines/` directory so the workflow has something to
-compare against — they are plain text and diff like code.
+compare against. They are plain text and diff like code.
