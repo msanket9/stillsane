@@ -32,8 +32,9 @@ comparable to a standard deviation for normally distributed data, and a
 distribution of distances is not normal -- it is bounded below at zero and
 right-skewed. Nothing downstream assumes otherwise: `z` is used purely as a
 scale-free "how far outside normal is this", it is never converted to a
-probability, and `warn_k`/`drift_k` are calibrated against observed probe
-behaviour rather than derived from Gaussian tails. The Mann-Whitney statistic
+probability, and `warn_k`/`drift_k` are empirical rather than derived from
+Gaussian tails -- tuned so far against constructed drift scenarios rather than a
+long run on a real provider, so they are starting points and not settled numbers. The Mann-Whitney statistic
 below is distribution-free and does carry its usual meaning, which is why it is
 allowed to corroborate but never to decide.
 """

@@ -32,6 +32,13 @@ class TargetConfig(BaseModel):
     #: Name of the environment variable holding the key. Never the key itself --
     #: this file is meant to live in git.
     api_key_env: str | None = None
+    #: Where the key goes. Defaults to the `Authorization: Bearer <key>` convention
+    #: that OpenAI-compatible endpoints use, but not every provider follows it --
+    #: Anthropic's Messages API wants `x-api-key: <key>` with no prefix, Azure wants
+    #: `api-key`. Configurable because the alternative is asking people to put a
+    #: live secret in `headers`, and this file is meant to live in git.
+    api_key_header: str = "authorization"
+    api_key_prefix: str = "Bearer "
     headers: dict[str, str] = Field(default_factory=dict)
     timeout_s: float = 60.0
     temperature: float | None = None

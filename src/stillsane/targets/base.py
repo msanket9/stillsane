@@ -84,7 +84,9 @@ class Target(ABC):
         headers = {"content-type": "application/json", **self.config.headers}
         key = self.config.api_key()
         if key:
-            headers.setdefault("authorization", f"Bearer {key}")
+            headers.setdefault(
+                self.config.api_key_header.lower(), f"{self.config.api_key_prefix}{key}"
+            )
         return headers
 
     async def call(self, probe: ProbeConfig, client: httpx.AsyncClient) -> Sample:

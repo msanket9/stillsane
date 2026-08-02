@@ -47,9 +47,7 @@ conventional monitor would have noticed.
 
 That `band <=0.03745` was not a number anyone chose. The baseline watched this
 probe vary in whitespace, number formatting and key order, and learned how much
-that is worth. The prose-wrapped version sits seventeen times further out. A
-chattier probe would have learned a band twenty times wider and stayed silent
-through the same rewording.
+that is worth. The prose-wrapped version sits seventeen times further out.
 
 You can run exactly this in about thirty seconds, with no API key, from
 [`examples/invoice-extract/`](examples/invoice-extract/).
@@ -177,16 +175,31 @@ So stillsane learns the band per probe, from the probe's own behaviour:
   Both are "how far apart are two independent draws". With drift, the second set
   shifts up.
 
-From this repo's own test suite, same code and no configuration:
+The obvious objection is that you could just guess: tight threshold for the JSON
+probe, loose one for the summariser. Here is what happened when I actually
+measured it, against a live model, with two probes picked to make exactly that
+point:
 
 ```
-stable JSON probe    band <= 0.178     # near-deterministic, tight band
-chatty prose probe   band <= 0.612     # 3.4x wider, and correctly so
+extract_invoice     JSON, ~60 chars     within-baseline distance  0.128
+summarise_quarter   prose, ~230 chars   within-baseline distance  0.066
 ```
 
-Both still catch a real regression. The stable probe flags prose creeping into its
-JSON at z=9.0; the chatty probe flags a genuine topic change while staying silent
-through ordinary rewording.
+The "deterministic" extraction probe is **twice as variable** as the open-ended
+summariser, which is the opposite of what I expected when I wrote the probes.
+
+The reason is visible in the samples. The extraction output is about sixty
+characters, and the model sometimes wraps it in a markdown fence and sometimes
+does not, sometimes writing `"1240.50 USD"` and sometimes `1240.50`. Three
+distinct outputs across five samples. On text that short, formatting variation
+dominates. The summaries are all different sentences but all around 230
+characters saying the same thing, so they stay close together.
+
+That is the argument for learning the band rather than setting it. I guessed
+confidently and was wrong by a factor of two on my own tool; the measurement was
+right and both probes passed. Anyone hand-tuning a threshold from intuition would
+have set it too tight on the probe that looked deterministic and too loose on the
+one that looked chatty.
 
 The headline number is **z**: how far behaviour moved in units of that probe's own
 normal variation. "Moved 6.2x further than this probe usually varies" is a
@@ -199,9 +212,11 @@ data, and a distribution of distances is emphatically not normal. It is bounded
 below at zero and right-skewed. So `z` here assumes no distribution at all: it is
 a scale-free measure of how far outside normal something sits, and **it does not
 convert to a probability**. `z=6` is not a one-in-a-billion event. The thresholds
-(`warn_k: 3`, `drift_k: 6`) are calibrated against real probe behaviour, not
-derived from Gaussian tails, and they are config knobs precisely because the right
-values are an empirical question. The Mann-Whitney p-value reported alongside is
+(`warn_k: 3`, `drift_k: 6`) are chosen empirically rather than derived from
+Gaussian tails, and they are config knobs precisely because the right values are
+an open question. Being straight about it: they were tuned against constructed
+drift scenarios, not yet against a long run on a real provider, so treat them as
+sensible starting points rather than settled numbers. The Mann-Whitney p-value reported alongside is
 distribution-free and does carry its usual meaning, which is exactly why it is
 supporting evidence and never the gate.
 

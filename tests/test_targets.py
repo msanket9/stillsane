@@ -102,6 +102,57 @@ def test_api_key_becomes_a_bearer_header(monkeypatch):
     assert seen["auth"] == "Bearer sk-secret"
 
 
+def test_auth_header_is_configurable(monkeypatch):
+    """Not every provider uses `Authorization: Bearer`.
+
+    Anthropic's Messages API wants `x-api-key` with no prefix; Azure wants
+    `api-key`. Hardcoding Bearer made those endpoints unreachable, and the only
+    workaround would have been putting a live secret in `headers`, which the
+    config is explicitly designed to avoid.
+    """
+    monkeypatch.setenv("TEST_KEY", "sk-secret")
+    target = build_target(
+        TargetConfig(
+            name="anthropic",
+            type="http",
+            base_url="https://api.anthropic.com",
+            path="/v1/messages",
+            api_key_env="TEST_KEY",
+            api_key_header="x-api-key",
+            api_key_prefix="",
+            headers={"anthropic-version": "2023-06-01"},
+            body={"messages": [{"role": "user", "content": "{{prompt}}"}]},
+            response_path="content.0.text",
+        )
+    )
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(request.headers)
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "hi"}]})
+
+    sample = call(target, PROBE, handler)
+    assert seen["x-api-key"] == "sk-secret"
+    assert "authorization" not in seen
+    assert seen["anthropic-version"] == "2023-06-01"
+    assert sample.text == "hi"
+
+
+def test_bearer_remains_the_default(monkeypatch):
+    monkeypatch.setenv("TEST_KEY", "sk-secret")
+    target = build_target(
+        TargetConfig(name="t", base_url="https://x/v1", model="m", api_key_env="TEST_KEY")
+    )
+    seen = {}
+
+    def handler(request):
+        seen.update(request.headers)
+        return httpx.Response(200, json=oai_body())
+
+    call(target, PROBE, handler)
+    assert seen["authorization"] == "Bearer sk-secret"
+
+
 def test_tool_calls_are_normalised():
     body = oai_body(
         content=None,
