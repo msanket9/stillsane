@@ -182,6 +182,76 @@ def cmd_baseline(args: argparse.Namespace) -> int:
             + (f", fingerprint {baseline.fingerprint}" if baseline.fingerprint else "")
         )
     print(f"\nCaptured {len(written)} baseline(s). These will not change until you run this again.")
+
+    # A floored band is a defaulted one: the samples showed no measurable spread,
+    # so it fell back to the signal's absolute floor. Say so here, where the user
+    # can still act, rather than letting them discover it via a surprising alert.
+    floored = [(b, b.floored) for b in written if b.floored]
+    if floored:
+        print("\nBands that were defaulted rather than measured:")
+        for baseline, names in floored:
+            print(f"  {baseline.probe_id} @ {baseline.target_name}: {', '.join(names)}")
+        print(
+            "\nThese samples showed no measurable spread, so there was nothing to learn\n"
+            "a band from and it fell back to a built-in floor. Either the probe really is\n"
+            "that stable, which is fine, or it needs more samples to reveal its variation.\n"
+            "Raise `baseline_samples` and recapture if you expect it to vary."
+        )
+    return 0
+
+
+def cmd_history(args: argparse.Namespace) -> int:
+    """Answer the question every alert provokes: since when?"""
+    config = _load(args.config)
+    _, history = _store(config, args.config)
+
+    if args.signal and not (args.probe and args.target):
+        # Without both, the query would quietly match nothing and read as "no
+        # history" rather than "you did not say which probe".
+        print(
+            "--signal needs --probe and --target too, since the same signal is "
+            "recorded for every probe.\nRun `stillsane history --signals` to see "
+            "what is available.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.signal:
+        rows = history.signal_trend(args.probe, args.target, args.signal, limit=args.limit)
+        if not rows:
+            print(
+                f"No history for {args.signal!r} on {args.probe!r} @ {args.target!r}.\n"
+                "Run `stillsane check` at least once, or use `stillsane history --signals` "
+                "to see what has been recorded.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"{args.signal}  {args.probe} @ {args.target}   (most recent first)")
+        for when, observed, z in rows:
+            value = f"{observed:.4g}" if observed is not None else "-"
+            effect = f"z={z:+.1f}" if z is not None else ""
+            print(f"  {when:<20} {value:>12}  {effect}")
+        return 0
+
+    if args.signals:
+        recorded = history.recorded_signals()
+        if not recorded:
+            print("Nothing recorded yet. Run `stillsane check` first.", file=sys.stderr)
+            return 1
+        print("Recorded signals (pass any of these to --signal):")
+        for probe, target, signal in recorded:
+            print(f"  {signal:<24} {probe} @ {target}")
+        return 0
+
+    runs = history.recent(limit=args.limit)
+    if not runs:
+        print("No runs recorded yet. Run `stillsane check` first.", file=sys.stderr)
+        return 1
+    print(f"Last {len(runs)} run(s), most recent first:")
+    for run_id, finished, level in runs:
+        print(f"  {finished:<20}  {level:<6}  {run_id}")
+    print("\nFor one signal over time:")
+    print("  stillsane history --probe <id> --target <name> --signal semantic_distance")
     return 0
 
 
@@ -284,6 +354,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_check.add_argument("-v", "--verbose", action="store_true", help="show signals that passed")
     p_check.add_argument("--json", action="store_true", help="machine-readable output")
     p_check.set_defaults(func=cmd_check)
+
+    p_hist = sub.add_parser("history", help="what past runs recorded, and when a signal moved")
+    p_hist.add_argument("--probe", help="probe id (with --signal)")
+    p_hist.add_argument("--target", help="target name (with --signal)")
+    p_hist.add_argument("--signal", help="show this signal over time, e.g. semantic_distance")
+    p_hist.add_argument(
+        "--signals", action="store_true", help="list every signal that has recorded history"
+    )
+    p_hist.add_argument("--limit", type=int, default=20, help="rows to show (default: 20)")
+    p_hist.set_defaults(func=cmd_history)
 
     p_watch = sub.add_parser("watch", help="scheduled mode (prefer cron or CI for anything real)")
     p_watch.add_argument("--probe", action="append", help="limit to this probe id (repeatable)")

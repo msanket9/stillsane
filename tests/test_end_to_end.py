@@ -474,3 +474,87 @@ def test_cli_state_lives_next_to_the_config(tmp_path, monkeypatch):
 
     cli.main(["-c", str(config_path), "baseline"])
     assert (config_path.parent / ".stillsane" / "baselines").is_dir()
+
+
+# --- Floored bands are surfaced -------------------------------------------
+
+
+def test_a_defaulted_band_is_reported_at_baseline_time(env):
+    """Identical samples mean nothing was measured; the band was defaulted.
+
+    The engine has always known this. Until now it kept it to itself, so a user
+    could not tell a genuinely deterministic probe from an under-sampled one.
+    """
+    config, store, _ = env
+    identical = ['{"total": 1, "due_date": "x"}']
+    written = run_baseline(config, store, identical)
+    assert "semantic_distance" in written[0].floored
+
+
+def test_a_measured_band_is_not_reported_as_floored(env):
+    config, store, _ = env
+    written = run_baseline(config, store, STABLE)
+    assert "semantic_distance" not in written[0].floored
+
+
+def test_the_report_marks_a_floored_band(env):
+    config, store, history = env
+    identical = ['{"total": 1, "due_date": "x"}']
+    run_baseline(config, store, identical)
+    result = run_check(config, store, history, identical)
+    assert "(floor)" in render(result, verbose=True, colour=False)
+
+
+def test_the_report_does_not_mark_a_measured_band(env):
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    result = run_check(config, store, history, STABLE)
+    text = render(result, verbose=True, colour=False)
+    semantic = next(ln for ln in text.splitlines() if "semantic_distance" in ln)
+    assert "(floor)" not in semantic
+
+
+# --- History surface -------------------------------------------------------
+
+
+def test_history_records_and_lists_signals(env):
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    run_check(config, store, history, STABLE)
+
+    recorded = history.recorded_signals()
+    assert ("extract_invoice", "prod", "semantic_distance") in recorded
+
+
+def test_history_answers_since_when_across_runs(env):
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    run_check(config, store, history, STABLE)
+    run_check(config, store, history, DRIFTED)
+
+    trend = history.signal_trend("extract_invoice", "prod", "valid_json")
+    assert len(trend) == 2
+    # Most recent first: the drifted run, then the clean one.
+    assert trend[0][1] == 0.0 and trend[1][1] == 1.0
+
+
+def test_history_cli_lists_runs(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(CONFIG))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    cli.main(["-c", str(config_path), "baseline"])
+    cli.main(["-c", str(config_path), "check"])
+    capsys.readouterr()
+
+    assert cli.main(["-c", str(config_path), "history"]) == 0
+    assert "pass" in capsys.readouterr().out
+
+
+def test_history_cli_needs_probe_and_target_with_signal(tmp_path, capsys):
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(CONFIG))
+    code = cli.main(["-c", str(config_path), "history", "--signal", "semantic_distance"])
+    assert code == 1
+    assert "--probe and --target" in capsys.readouterr().err

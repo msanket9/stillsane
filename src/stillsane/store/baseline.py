@@ -55,6 +55,10 @@ class Baseline:
     anchors: dict[str, Anchor] = field(default_factory=dict)
     model_id: str | None = None
     fingerprint: str | None = None
+    #: Signals whose band came out floored at capture time, i.e. defaulted rather
+    #: than measured. Not persisted -- it is a property of the numbers, recomputed
+    #: whenever they are, and only interesting at the moment of capture.
+    floored: list[str] = field(default_factory=list)
 
     @property
     def usable(self) -> list[Sample]:

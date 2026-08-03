@@ -19,20 +19,22 @@ import httpx
 
 from .compare import (
     Anchor,
+    BandConfig,
     anchor_of,
     build_run,
     compare_probe,
     is_clean,
     pairwise_within,
     pool_from_run,
+    robust_band,
     within_run_evidence,
 )
 from .config import Config, ProbeConfig, TargetConfig, config_hash
 from .judge import Judge, JudgeVerdict
 from .judge import apply as judge_apply
-from .models import Level, ProbeVerdict, RunResult, Sample, SignalVerdict
+from .models import Direction, Level, ProbeVerdict, RunResult, Sample, SignalVerdict
 from .signals import build_signals, default_embedder
-from .signals.base import PairwiseSignal
+from .signals.base import PairwiseSignal, Signal
 from .store import Baseline, BaselineStore, History
 from .targets import Target, build_target, collect
 
@@ -128,17 +130,40 @@ async def capture_baseline(
                 pooled[signal.name] = distances
                 anchors[signal.name] = anchor_of(distances)
 
-        written.append(
-            store.save(
-                plan.target_config.name,
-                plan.probe.id,
-                samples,
-                plan.expected_hash,
-                pooled=pooled,
-                anchors=anchors,
-            )
+        baseline = store.save(
+            plan.target_config.name,
+            plan.probe.id,
+            samples,
+            plan.expected_hash,
+            pooled=pooled,
+            anchors=anchors,
         )
+        baseline.floored = _floored_signals(signals, pooled, config.thresholds.to_band_config())
+        written.append(baseline)
     return written
+
+
+def _floored_signals(
+    signals: list[Signal], pooled: dict[str, list[float]], cfg: BandConfig
+) -> list[str]:
+    """Which signals ended up with a defaulted band rather than a measured one.
+
+    Worth knowing at capture time, because that is the moment the user can still
+    do something about it -- take more samples, or satisfy themselves that the
+    probe really is deterministic. Discovering it later, from a surprising alert,
+    is the expensive way to find out.
+    """
+    out = []
+    for signal in signals:
+        values = pooled.get(signal.name)
+        if not values:
+            continue
+        band = robust_band(
+            values, direction=Direction.UP_IS_BAD, cfg=cfg, floor=getattr(signal, "floor", 0.0)
+        )
+        if band.floored:
+            out.append(signal.name)
+    return out
 
 
 async def _run_judge(

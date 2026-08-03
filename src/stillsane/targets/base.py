@@ -12,6 +12,7 @@ you already paid for.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from abc import ABC, abstractmethod
 from typing import Any
@@ -27,19 +28,51 @@ from ..models import Sample
 DEFAULT_CONCURRENCY = 4
 
 
-def dotted_get(data: Any, path: str) -> Any:
-    """Resolve `choices.0.message.content` against decoded JSON.
+#: `content[type=text]` -- pick the first list element whose field equals a value.
+_FILTER = re.compile(r"^([^\[\]]*)\[([^=\[\]]+)=([^\[\]]*)\]$")
 
-    Dotted paths with numeric segments cover essentially every response shape worth
-    supporting. The general answer is to embed an expression evaluator and let
-    people write arbitrary extraction code, which is a great deal of surface area
-    for the last few percent of response shapes.
+
+def dotted_get(data: Any, path: str) -> Any:
+    """Resolve a path like `choices.0.message.content` against decoded JSON.
+
+    Three segment forms, in order of how often they are needed:
+
+    * `key`        -- a dict lookup
+    * `0`          -- a list index
+    * `key[f=v]`   -- the first element of the list at `key` whose field `f`
+                      equals `v`; a bare `[f=v]` filters the current list
+
+    The filter form exists because index paths are not stable on providers that
+    return heterogeneous content blocks. With thinking enabled, Anthropic's
+    `content` array leads with a thinking block, so `content.0.text` silently
+    resolves to the wrong block and the probe compares an empty string forever.
+    `content[type=text].text` says what is actually meant.
+
+    The general answer is to embed an expression evaluator and let people write
+    arbitrary extraction code, which is a great deal of surface area for the last
+    few percent of response shapes.
     """
     current = data
     for segment in path.split("."):
         if current is None:
             return None
-        if segment.isdigit() and isinstance(current, list):
+
+        match = _FILTER.match(segment)
+        if match:
+            key, field, wanted = match.groups()
+            if key:
+                current = current.get(key) if isinstance(current, dict) else None
+            if not isinstance(current, list):
+                return None
+            current = next(
+                (
+                    item
+                    for item in current
+                    if isinstance(item, dict) and str(item.get(field)) == wanted
+                ),
+                None,
+            )
+        elif segment.isdigit() and isinstance(current, list):
             index = int(segment)
             current = current[index] if index < len(current) else None
         elif isinstance(current, dict):

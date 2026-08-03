@@ -334,3 +334,47 @@ def test_render_template_reaches_into_nested_structures():
 def test_render_template_leaves_non_strings_alone():
     out = render_template({"n": 5, "flag": True, "none": None}, {"prompt": "P"})
     assert out == {"n": 5, "flag": True, "none": None}
+
+
+# --- response_path block filtering ----------------------------------------
+
+
+def test_response_path_selects_a_block_by_type():
+    """Index paths are unstable on providers with heterogeneous content blocks.
+
+    With thinking enabled, Anthropic leads `content` with a thinking block, so
+    `content.0.text` resolves to the wrong one and the probe compares an empty
+    string forever without ever erroring.
+    """
+    body = {
+        "content": [
+            {"type": "thinking", "thinking": ""},
+            {"type": "text", "text": "the real answer"},
+        ]
+    }
+    assert dotted_get(body, "content.0.text") is None
+    assert dotted_get(body, "content[type=text].text") == "the real answer"
+
+
+def test_response_path_filter_returns_none_when_nothing_matches():
+    body = {"content": [{"type": "text", "text": "x"}]}
+    assert dotted_get(body, "content[type=image].url") is None
+
+
+def test_response_path_filter_works_on_a_bare_list():
+    assert dotted_get([{"k": "a", "v": 1}, {"k": "b", "v": 2}], "[k=b].v") == 2
+
+
+def test_response_path_filter_takes_the_first_match():
+    body = {"c": [{"type": "text", "text": "first"}, {"type": "text", "text": "second"}]}
+    assert dotted_get(body, "c[type=text].text") == "first"
+
+
+def test_response_path_filter_on_a_non_list_is_none():
+    assert dotted_get({"c": "not a list"}, "c[type=text].text") is None
+
+
+def test_plain_paths_still_work():
+    """The filter syntax must not disturb the common case."""
+    assert dotted_get({"choices": [{"message": {"content": "x"}}]},
+                      "choices.0.message.content") == "x"

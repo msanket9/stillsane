@@ -102,8 +102,25 @@ class History:
     def recent(self, limit: int = 20) -> list[tuple[str, str, str]]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT run_id, finished, level FROM runs ORDER BY started DESC LIMIT ?",
+                # rowid breaks ties. Timestamps are stored at second resolution, so
+                # two runs in the same second sort arbitrarily without it -- and
+                # arbitrary order is exactly wrong for a "what happened when" view.
+                "SELECT run_id, finished, level FROM runs "
+                "ORDER BY started DESC, rowid DESC LIMIT ?",
                 (limit,),
+            ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
+    def recorded_signals(self) -> list[tuple[str, str, str]]:
+        """Every (probe, target, signal) that has history, for discovery.
+
+        Asking someone to remember exact signal names before they can look at
+        their own data is a good way to make the data unused.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT probe_id, target, signal FROM results "
+                "ORDER BY probe_id, target, signal"
             ).fetchall()
         return [(r[0], r[1], r[2]) for r in rows]
 
@@ -116,7 +133,8 @@ class History:
                 "SELECT runs.finished, results.observed, results.z "
                 "FROM results JOIN runs USING (run_id) "
                 "WHERE results.probe_id = ? AND results.target = ? AND results.signal = ? "
-                "ORDER BY runs.started DESC LIMIT ?",
+                # See `recent` -- rowid breaks second-resolution timestamp ties.
+                "ORDER BY runs.started DESC, results.rowid DESC LIMIT ?",
                 (probe_id, target, signal, limit),
             ).fetchall()
         return [(r[0], r[1], r[2]) for r in rows]

@@ -55,8 +55,16 @@ def _signal_line(sv: SignalVerdict, paint: Painter) -> str:
     band = f"band {sv.band.describe()}" if sv.band else ""
     effect = f"z={sv.z:+.1f}" if sv.z is not None else ""
 
+    # A floored band was not measured, it was defaulted: the probe's own samples
+    # showed no spread, so the band fell back to the signal's absolute floor.
+    # That means either the probe is genuinely deterministic or it was
+    # under-sampled, and the two want very different responses. The engine has
+    # always known which; the report used to keep it to itself.
+    if sv.band is not None and sv.band.floored:
+        band += " (floor)"
+
     if observed or band or effect:
-        row = f"  {sv.signal:<20} {observed:>12}  {band:<20} {effect:<8}"
+        row = f"  {sv.signal:<20} {observed:>12}  {band:<24} {effect:<8}"
     else:
         # Pseudo-signals -- a missing baseline, a stale config hash, a dead endpoint
         # -- carry no measurement, so the columns above render as an empty line with
