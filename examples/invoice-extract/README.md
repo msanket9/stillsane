@@ -45,9 +45,9 @@ stillsane check
 
 ```
 DRIFT  extract_invoice @ prod
-  semantic_distance           0.133  band <=0.03745       z=+17.3
-  length_chars                  106  band 36..52          z=+23.2
-  completion_tokens              26  band 7..15           z=+11.2
+  semantic_distance           0.133  band <=0.03745 (floor)   z=+17.3
+  length_chars                  106  band 36..52 (floor)      z=+23.2
+  completion_tokens              26  band 7..15 (floor)       z=+11.2
   valid_json               0% valid  band >=1
   5 other signal(s) unchanged
 
@@ -64,11 +64,19 @@ DRIFT  extract_invoice @ prod
 
 Exit code 1, so this fails a build.
 
-Note what the band did. The baseline saw three phrasings that differ in
-whitespace, number formatting and key order, and learned that a distance up to
-`0.037` is normal for this probe. The prose-wrapped version sits at `0.133`,
-seventeen times further out than this probe ever normally varies. Nobody chose
-that threshold; it came from the probe's own behaviour.
+Note the `(floor)` markers on those three signals. This mock cycles three fixed
+phrasings, so they showed too little spread to measure and their bands fell back
+to a built-in floor. That is the tool refusing to present a defaulted number as a
+measured one. `valid_json` carries no marker because its band is not a
+measurement at all: it passed every baseline sample, so any failure now counts.
+
+Run `stillsane baseline` here and it reports the same thing at capture time,
+naming `semantic_distance`. It lists only the distance signals, so the floors on
+`length_chars` and `completion_tokens` surface at check time instead.
+
+Against a real endpoint the bands are learned from the probe's own behaviour and
+the markers disappear. Either way the comparison holds: the prose-wrapped version
+sits at `0.133`, seventeen times outside the band. Nobody picked that threshold.
 
 Note also what `has_keys` did: nothing. It is not in the list of signals that
 moved, because `total` and `due_date` are both still there. The data survived and

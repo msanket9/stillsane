@@ -12,7 +12,7 @@ moved outside the range that probe normally varies by. It observes from outside,
 over plain HTTP. There is nothing to instrument, no SDK to import, no account, and
 no hosted service.
 
-> **Status: early, v0.0.4.** Everything described below works. The config format
+> **Status: early, v0.0.5.** Everything described below works. The config format
 > may still change before 0.1. See [Status](#status).
 
 ---
@@ -25,9 +25,9 @@ but every caller doing `json.loads(response)` is now throwing.
 
 ```
 DRIFT  extract_invoice @ prod
-  semantic_distance           0.133  band <=0.03745       z=+17.3
-  length_chars                  106  band 36..52          z=+23.2
-  completion_tokens              26  band 7..15           z=+11.2
+  semantic_distance           0.133  band <=0.03745 (floor)   z=+17.3
+  length_chars                  106  band 36..52 (floor)      z=+23.2
+  completion_tokens              26  band 7..15 (floor)       z=+11.2
   valid_json               0% valid  band >=1
   5 other signal(s) unchanged
 
@@ -45,9 +45,13 @@ DRIFT  extract_invoice @ prod
 Exit code 1, so this fails a build. Nothing errored, nothing was slower, and no
 conventional monitor would have noticed.
 
-That `band <=0.03745` was not a number anyone chose. The baseline watched this
-probe vary in whitespace, number formatting and key order, and learned how much
-that is worth. The prose-wrapped version sits seventeen times further out.
+That `band <=0.03745` was not a number anyone chose, and the `(floor)` beside it
+is the tool being honest about how it got there. This example runs against a tidy
+mock whose samples barely vary, so there was too little spread to learn from and
+the band fell back to a built-in floor. Against a real endpoint it is measured from the
+probe's own behaviour instead, and stillsane tells you which of the two happened
+rather than presenting a defaulted number as a measured one. Either way the
+prose-wrapped version sits seventeen times outside it.
 
 You can run exactly this in about thirty seconds, with no API key, from
 [`examples/invoice-extract/`](examples/invoice-extract/).
