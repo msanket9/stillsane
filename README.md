@@ -228,7 +228,11 @@ Related decisions, since they are the ones that determine whether this is usable
 
 - **Robust statistics throughout.** Median and MAD, not mean and standard
   deviation. At the sample counts anyone will actually pay for, one weird sample
-  dominates a standard deviation and barely moves a MAD.
+  dominates a standard deviation and barely moves a MAD. The known cost: MAD
+  collapses to zero when over half the samples are identical, which a
+  low-temperature model does often. The band then falls to its floor and can end up
+  tighter than the probe's own baseline. `stillsane bands` finds that case and says
+  so; it is not yet fixed in the estimator.
 - **Baselines never update themselves.** Only `stillsane baseline` replaces one. A
   monitor that silently re-baselines has defined drift out of existence.
 - **Clean runs tighten the band, but widening is capped.** Passing runs feed back
@@ -253,7 +257,82 @@ the embedding model itself is fetched once on first use (~32MB) and cached. See
 Beyond the three commands in the [quickstart](#quickstart) there is `stillsane
 watch`, a sleep loop that is honest about being one. cron or CI does this better:
 they survive reboots, they log, and they can tell you when the job itself stopped
-running, which a bare process cannot do for itself.
+running, which a bare process cannot do for itself. There is also `stillsane
+bands`, below.
+
+### Inspecting the bands
+
+`check` tells you whether a probe moved. `stillsane bands` answers the question
+underneath it: is the band it would be judged against a measurement at all?
+
+```bash
+stillsane bands
+```
+
+It reads only what is already on disk, so it costs nothing, needs no API key, and
+touches no network. It reports every band, including the pointwise ones that never
+appear in the capture-time warning, and names the ones that will misreport:
+
+```
+extract_invoice @ claude   (v1, 8 sample(s), captured 2026-08-04)
+  semantic_distance      band <=0.02 (floor)          31 pairs   spread 0..0.1276
+    COLLAPSED: the median and MAD are both zero, so the scale could not be
+    measured and the band fell to its floor. The baseline itself spans
+    0..0.1276, and 14 of 31 pairs (45%) fall outside the band. A check drawing
+    those reports drift against an endpoint that has not changed. Typically
+    the output is bimodal: identical on most runs, formatted differently on
+    the rest. More samples will not help while one form dominates, because the
+    median stays put and the MAD stays zero.
+  length_chars           band 60..76 (floor)           8 values  spread 56..68
+    COLLAPSED: ...
+  defaulted to a floor, samples agree: latency_ms
+  3 other band(s) look sound
+
+summarise_incident @ claude   (v1, 8 sample(s), captured 2026-08-04)
+  3 other band(s) look sound
+
+2 band(s) will misreport: length_chars, semantic_distance
+Recapture will not help a collapsed band. Consider a probe whose output
+varies less arbitrarily, or pin the band explicitly in config.
+```
+
+(The second `COLLAPSED` paragraph is elided above; it repeats the first with that
+signal's own numbers.)
+
+That is a real baseline against a real provider, and it is the failure worth
+knowing about. When a probe returns byte-identical output most of the time and a
+different formatting the rest, the median pair distance is zero and so is the MAD.
+The scale collapses, the band drops to its floor, and the result looks exactly
+like every other band. It is not one: 45% of the baseline it was built from
+already sits outside it.
+
+More samples do not fix that one, which is why it gets a different message from an
+ordinary floored band. While one formatting dominates, the median stays put and
+the MAD stays zero however many you take.
+
+`--strict` exits 2 when any band will misreport, for a CI job that should fail on
+a baseline this shape. `-v` shows every band rather than only the interesting ones.
+
+`--json` writes the same inspection as structured output. Unlike the human report
+it always includes every band, sound ones included, since a consumer diffing bands
+between runs needs to tell "still sound" from "no longer reported":
+
+```json
+{
+  "signal": "semantic_distance",
+  "finding": "collapsed",
+  "suspect": true,
+  "unit": "pairs",
+  "n": 31,
+  "observed_min": 0.0,
+  "observed_max": 0.1276024580001831,
+  "raw_scale": 0.0,
+  "outside": 14,
+  "outside_pct": 45.16,
+  "band": {"center": 0.0, "scale": 0.006666666666666667,
+           "lower": null, "upper": 0.02, "n": 31, "floored": true}
+}
+```
 
 ### Config
 

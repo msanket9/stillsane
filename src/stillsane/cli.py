@@ -17,6 +17,10 @@ from pathlib import Path
 
 from . import __version__
 from .alerts import as_json, exit_code_for, send
+from .bands import as_json as bands_as_json
+from .bands import build_probe_signals
+from .bands import inspect as inspect_bands
+from .bands import render as render_bands
 from .config import Config, load_config
 from .generate import (
     DEFAULT_MERGE_DISTANCE,
@@ -197,6 +201,63 @@ def cmd_baseline(args: argparse.Namespace) -> int:
             "that stable, which is fine, or it needs more samples to reveal its variation.\n"
             "Raise `baseline_samples` and recapture if you expect it to vary."
         )
+    # This list only ever covers the pairwise signals, since pointwise ones are not
+    # pooled and so are not visible from here. `bands` recomputes all of them, and
+    # is also the only place a band that is floored *and wrong* gets named as such.
+    print("\nTo see every band and whether it holds:\n  stillsane bands")
+    return 0
+
+
+def cmd_bands(args: argparse.Namespace) -> int:
+    """Show the bands a check would be judged against, and flag the broken ones.
+
+    Reads only what is already on disk, so it costs nothing and needs no key.
+    """
+    config = _load(args.config)
+    store, _ = _store(config, args.config)
+    only = set(args.probe) if args.probe else None
+
+    cfg = config.thresholds.to_band_config()
+    reports = []
+    missing = []
+
+    for target in config.targets:
+        for probe in config.probes:
+            if only and probe.id not in only:
+                continue
+            if probe.targets and target.name not in probe.targets:
+                continue
+            baseline = store.load(target.name, probe.id)
+            if baseline is None:
+                missing.append(f"{probe.id} @ {target.name}")
+                continue
+            signals = build_probe_signals(probe.checks)
+            reports.append(inspect_bands(baseline, signals, cfg))
+
+    if not reports:
+        if missing:
+            print(
+                "No baselines captured yet for: " + ", ".join(missing) + "\n"
+                "Run `stillsane baseline` first.",
+                file=sys.stderr,
+            )
+            return 1
+        print("No probes matched.", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(bands_as_json(reports))
+    else:
+        print(render_bands(reports, verbose=args.verbose))
+    # stderr either way, so it cannot corrupt the JSON on stdout.
+    if missing:
+        print("\nNo baseline yet for: " + ", ".join(missing), file=sys.stderr)
+
+    # Default is 0: inspecting a baseline should not break a build on its own. With
+    # --strict it reports WARN, which is the honest level -- a suspect band is a
+    # measurement problem, not evidence that anything drifted.
+    if args.strict and any(p.suspect for p in reports):
+        return EXIT_CODES[Level.WARN]
     return 0
 
 
@@ -354,6 +415,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_check.add_argument("-v", "--verbose", action="store_true", help="show signals that passed")
     p_check.add_argument("--json", action="store_true", help="machine-readable output")
     p_check.set_defaults(func=cmd_check)
+
+    p_bands = sub.add_parser("bands", help="show the learned bands and flag ones that will misreport")
+    p_bands.add_argument("--probe", action="append", help="limit to this probe id (repeatable)")
+    p_bands.add_argument(
+        "-v", "--verbose", action="store_true", help="show every band, not only the suspect ones"
+    )
+    p_bands.add_argument(
+        "--strict", action="store_true", help="exit 2 if any band will misreport"
+    )
+    p_bands.add_argument("--json", action="store_true", help="machine-readable output")
+    p_bands.set_defaults(func=cmd_bands)
 
     p_hist = sub.add_parser("history", help="what past runs recorded, and when a signal moved")
     p_hist.add_argument("--probe", help="probe id (with --signal)")
