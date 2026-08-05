@@ -20,6 +20,15 @@ from stillsane.store.baseline import Baseline
 
 CFG = BandConfig()
 
+#: Bimodal, with a minority big enough for the IQR to measure once the MAD has
+#: collapsed. The estimator handles this shape, so it is no longer a finding.
+MEASURABLE_BIMODAL = [0.0] * 16 + [0.128] * 12
+
+#: Bimodal, with a minority small enough that the IQR collapses too. Roughly one
+#: sample in five reformatting, which puts both quartiles inside the majority mode.
+#: This is what a genuine collapse now looks like: no robust estimator can see it.
+COLLAPSED_BIMODAL = [0.0] * 22 + [0.128] * 6
+
 
 def baseline_with(pooled=None, samples=None) -> Baseline:
     return Baseline(
@@ -43,29 +52,43 @@ def find(report, name):
 # --- The collapse ---------------------------------------------------------
 
 
-def test_bimodal_pairwise_band_is_flagged_collapsed(signals_for):
-    """Most pairs identical, the rest far apart: median 0, MAD 0, band floored.
+def test_measurable_bimodal_band_is_no_longer_collapsed(signals_for):
+    """The estimator fix, asserted from the outside.
 
-    This is the shape a low-temperature model produces when it usually returns
-    byte-identical output and occasionally reformats. The band lands on the floor
-    while the baseline's own pairs sit well outside it.
+    Median 0 and MAD 0, but the minority mode is large enough that the IQR still
+    measures it. This used to floor the band at 0.02 with 12 of 28 pairs outside
+    it, which made a clean run report drift. It now resolves to a real scale and
+    admits its own baseline.
     """
-    # 6 of 8 samples in one form, 2 in another: 12 cross-cluster pairs at 0.128,
-    # 16 within-cluster pairs at 0. The median is 0 and so is the MAD.
-    pooled = {"semantic_distance": [0.0] * 16 + [0.128] * 12}
-    report = inspect(baseline_with(pooled), signals_for(), CFG)
+    pooled = {"semantic_distance": MEASURABLE_BIMODAL}
+    sd = find(inspect(baseline_with(pooled), signals_for(), CFG), "semantic_distance")
+    assert sd.raw_scale > 0
+    assert not sd.band.floored
+    assert sd.outside == 0
+    assert sd.finding is None
+
+
+def test_bimodal_pairwise_band_is_flagged_collapsed(signals_for):
+    """A genuine collapse: both the MAD and the IQR report zero.
+
+    With the minority down to roughly one sample in five, both quartiles sit inside
+    the majority mode and no robust estimator can see the spread. The band lands on
+    the floor while the baseline's own pairs sit outside it, which is the shape
+    worth reporting now that the measurable case is handled.
+    """
+    report = inspect(baseline_with({"semantic_distance": COLLAPSED_BIMODAL}), signals_for(), CFG)
 
     sd = find(report, "semantic_distance")
     assert sd.finding is Finding.COLLAPSED
     assert sd.raw_scale == 0.0
-    assert sd.outside == 12
+    assert sd.outside == 6
     assert sd.observed_max == pytest.approx(0.128)
     assert report.suspect
 
 
 def test_collapsed_band_sits_below_its_own_baseline(signals_for):
     """The defect in one assertion: the band excludes data it was built from."""
-    pooled = {"semantic_distance": [0.0] * 16 + [0.128] * 12}
+    pooled = {"semantic_distance": COLLAPSED_BIMODAL}
     sd = find(inspect(baseline_with(pooled), signals_for(), CFG), "semantic_distance")
     assert sd.band.upper < sd.observed_max
 
@@ -127,15 +150,24 @@ def test_pointwise_signals_are_inspected(signals_for):
 
 
 def test_bimodal_pointwise_band_is_flagged(signals_for):
-    """A length band can collapse exactly like a distance band.
+    """A length band breached from below, which the estimator fix does not rescue.
 
-    Found against a real provider: band 60..76 built from samples spanning 56..68,
-    breached from below. The direction matters, which is why the diagnosis reports
+    Found against a real provider: band 60..76 built from samples spanning 56..68.
+    The IQR fallback gives it a real scale, so it is no longer a collapse. But
+    `3 * scale` is still under the absolute floor of 8, so the floor governs, the
+    band is unchanged, and two samples remain outside it. The honest diagnosis is
+    therefore `SELF_OUTSIDE`: the scale is measured, the band is simply tighter
+    than this probe's own behaviour warrants.
+
+    That distinction is the point. No dispersion estimate bridges two modes 12
+    apart from 8 samples, so this one is a fact about the probe rather than about
+    the estimator. The direction also matters, which is why the diagnosis reports
     the observed range rather than its maximum.
     """
     samples = [sample("x" * 68) for _ in range(6)] + [sample("x" * 56) for _ in range(2)]
     lc = find(inspect(baseline_with(samples=samples), signals_for(), CFG), "length_chars")
-    assert lc.finding is Finding.COLLAPSED
+    assert lc.finding is Finding.SELF_OUTSIDE
+    assert lc.raw_scale > 0
     assert lc.observed_min < lc.band.lower
     assert lc.outside == 2
 
@@ -169,7 +201,7 @@ def test_failed_samples_are_excluded(signals_for):
 
 
 def test_render_names_the_broken_band(signals_for):
-    pooled = {"semantic_distance": [0.0] * 16 + [0.128] * 12}
+    pooled = {"semantic_distance": COLLAPSED_BIMODAL}
     text = render([inspect(baseline_with(pooled), signals_for(), CFG)])
     assert "COLLAPSED" in text
     assert "semantic_distance" in text
@@ -217,7 +249,7 @@ def test_json_reports_every_band_not_only_the_suspect_ones(signals_for):
     reported".
     """
     pooled = {
-        "semantic_distance": [0.0] * 16 + [0.128] * 12,
+        "semantic_distance": COLLAPSED_BIMODAL,
         "json_shape_distance": [0.0] * 28,
     }
     samples = [sample("x" * 40) for _ in range(5)]
@@ -240,14 +272,14 @@ def test_json_keeps_finding_key_on_sound_bands(signals_for):
 
 
 def test_json_round_trips(signals_for):
-    pooled = {"semantic_distance": [0.0] * 16 + [0.128] * 12}
+    pooled = {"semantic_distance": COLLAPSED_BIMODAL}
     report = inspect(baseline_with(pooled), signals_for(), CFG)
     data = json.loads(as_json([report]))
     sd = next(b for b in data["probes"][0]["bands"] if b["signal"] == "semantic_distance")
     assert sd["finding"] == "collapsed"
-    assert sd["outside"] == 12
+    assert sd["outside"] == 6
     assert sd["n"] == 28
-    assert sd["outside_pct"] == pytest.approx(42.86, abs=0.01)
+    assert sd["outside_pct"] == pytest.approx(21.43, abs=0.01)
     assert sd["band"]["floored"] is True
 
 
@@ -259,7 +291,7 @@ def test_inspection_never_embeds():
     than quietly downloading a model.
     """
     signals = build_signals(None, no_embedder())
-    pooled = {"semantic_distance": [0.0] * 16 + [0.128] * 12}
+    pooled = {"semantic_distance": COLLAPSED_BIMODAL}
     samples = [sample("x" * 40) for _ in range(5)]
     report = inspect(baseline_with(pooled, samples), signals, CFG)
     assert find(report, "semantic_distance").finding is Finding.COLLAPSED

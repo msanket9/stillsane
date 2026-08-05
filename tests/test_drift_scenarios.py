@@ -120,7 +120,19 @@ def test_band_widths_reflect_probe_character(signals_for):
 
 
 def test_identical_baseline_tolerates_whitespace(signals_for):
-    """A byte-identical baseline gives a zero-width band; the floor must absorb trivia."""
+    """A byte-identical baseline must still absorb trivia rather than alert on it.
+
+    The band here comes from the under-sampled rescue, which rebuilds it from the
+    current run's own spread. That spread is itself tie-heavy -- two distinct texts
+    repeated -- so it used to collapse the MAD a second time and land back on the
+    floor. It now resolves to a measured scale via the IQR fallback, which is what
+    the rescue was always trying to achieve.
+
+    Asserted as "the band has a real scale and the whitespace passes" rather than
+    "the band is floored". Floored-ness was the old mechanism, not the property
+    worth protecting: a band that absorbs whitespace because it measured this
+    probe's variation is strictly better than one that absorbs it by default.
+    """
     identical = ['{"status": "ok", "count": 3}'] * 5
     reformatted = ['{"status": "ok", "count": 3} ', '{"status": "ok", "count": 3}\n'] * 2
     verdict = run(signals_for, identical, reformatted, ["valid_json"])
@@ -129,7 +141,8 @@ def test_identical_baseline_tolerates_whitespace(signals_for):
     ]
 
     band = next(s for s in verdict.signals if s.signal == "semantic_distance").band
-    assert band.floored, "a zero-variance baseline must fall back to the absolute floor"
+    assert band.scale > 0, "the band must have some width, however it was arrived at"
+    assert band.upper >= signals_for()[0].floor, "and must absorb at least the floor's worth"
 
 
 def test_under_sampled_baseline_does_not_cry_wolf(signals_for):

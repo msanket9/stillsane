@@ -56,6 +56,10 @@ EPS = 1e-12
 #: data, so `k` keeps its familiar "number of sigmas" meaning.
 MAD_TO_SIGMA = 1.4826
 
+#: Same idea for an interquartile range. Only used when the MAD has collapsed; see
+#: `robust_centre_scale`.
+IQR_TO_SIGMA = 1.0 / 1.349
+
 #: A baseline counts as uninformative -- as having observed no variation at all,
 #: rather than a little -- only when its spread is under this fraction of the
 #: signal's floor. Anything above it is a real measurement and gets trusted.
@@ -84,13 +88,34 @@ class BandConfig:
 
 
 def robust_centre_scale(values: Sequence[float]) -> tuple[float, float]:
-    """Median and MAD-derived scale. Returns (0, 0) for an empty input."""
+    """Median and a robust scale. Returns (0, 0) for an empty input.
+
+    The MAD is the right estimator almost everywhere here, and its 50% breakdown
+    point is exactly why. The one place that strength turns into a defect is when
+    more than half the samples are identical: the MAD then reports zero dispersion
+    for a probe that visibly varies. Low-temperature models do this constantly --
+    byte-identical output most runs, a different formatting the rest -- and a zero
+    scale drops the band onto its floor, where `z` ends up divided by a constant
+    rather than by anything the probe told us about itself.
+
+    The interquartile range survives the ties that kill the MAD, so that is the
+    fallback. Reaching for it only after the MAD has failed matters: the IQR breaks
+    down at 25%, so using it everywhere would quietly loosen every band in the tool.
+
+    When the samples really are all identical the IQR is zero too. That is the
+    correct answer rather than a failure, so the fallback declines to invent a
+    number and the signal's floor takes over as it should.
+    """
     if not len(values):
         return 0.0, 0.0
     arr = np.asarray(values, dtype=float)
     centre = float(np.median(arr))
     mad = float(np.median(np.abs(arr - centre)))
-    return centre, MAD_TO_SIGMA * mad
+    scale = MAD_TO_SIGMA * mad
+    if scale > EPS:
+        return centre, scale
+    q1, q3 = np.percentile(arr, [25, 75])
+    return centre, IQR_TO_SIGMA * float(q3 - q1)
 
 
 def robust_band(
