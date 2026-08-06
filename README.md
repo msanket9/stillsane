@@ -12,7 +12,7 @@ moved outside the range that probe normally varies by. It observes from outside,
 over plain HTTP. There is nothing to instrument, no SDK to import, no account, and
 no hosted service.
 
-> **Status: early, v0.0.5.** Everything described below works. The config format
+> **Status: early, v0.0.6.** Everything described below works. The config format
 > may still change before 0.1. See [Status](#status).
 
 ---
