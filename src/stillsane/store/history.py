@@ -124,6 +124,33 @@ class History:
             ).fetchall()
         return [(r[0], r[1], r[2]) for r in rows]
 
+    def probe_results(
+        self, limit_runs: int = 50
+    ) -> list[tuple[str, str, str, str, str, str | None]]:
+        """(finished, run_id, probe_id, target, level, detail), newest runs first.
+
+        Per signal rather than per probe, because the caller needs the `transport`
+        rows specifically: an unreachable endpoint and a drifting one both end a run
+        early, and only the detail says which happened. Aggregating to a probe level
+        here would throw that away.
+
+        The run limit is applied to *runs* rather than to rows, since a row cap
+        would silently truncate a run's probes and make a healthy run look partial.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT runs.finished, results.run_id, results.probe_id, results.target, "
+                "results.level, results.detail "
+                "FROM results JOIN runs USING (run_id) "
+                "WHERE results.run_id IN ("
+                "  SELECT run_id FROM runs ORDER BY started DESC, rowid DESC LIMIT ?"
+                ") "
+                # See `recent` -- rowid breaks second-resolution timestamp ties.
+                "ORDER BY runs.started DESC, results.rowid DESC",
+                (limit_runs,),
+            ).fetchall()
+        return [(r[0], r[1], r[2], r[3], r[4], r[5]) for r in rows]
+
     def signal_trend(
         self, probe_id: str, target: str, signal: str, limit: int = 30
     ) -> list[tuple[str, float | None, float | None]]:

@@ -33,6 +33,9 @@ from .models import EXIT_CODES, Level
 from .report import render
 from .runner import capture_baseline, check
 from .signals import default_embedder
+from .status import as_json as as_status_json
+from .status import assess, parse_every
+from .status import render as render_status
 from .store import BaselineStore, History
 
 DEFAULT_CONFIG = "stillsane.yaml"
@@ -261,6 +264,38 @@ def cmd_bands(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_status(args: argparse.Namespace) -> int:
+    """Report on the canary rather than on the model.
+
+    Costs nothing and needs no key: it reads the history database only.
+    """
+    config = _load(args.config)
+    _, history = _store(config, args.config)
+
+    every = None
+    if args.expect_every:
+        try:
+            every = parse_every(args.expect_every)
+        except ValueError as exc:
+            print(f"stillsane: {exc}", file=sys.stderr)
+            return 1
+
+    status = assess(
+        history.recent(limit=args.limit),
+        history.probe_results(limit_runs=args.limit),
+        expect_every_s=every,
+    )
+
+    print(as_status_json(status) if args.json else render_status(status, limit=args.limit))
+
+    # Default 0: asking whether the monitor is alive should not fail a build merely
+    # for having been asked. --strict is for the cron job that wants to alert when
+    # its own canary has stopped reporting, which is the whole point of the command.
+    if args.strict and not status.healthy:
+        return EXIT_CODES[Level.WARN]
+    return 0
+
+
 def cmd_history(args: argparse.Namespace) -> int:
     """Answer the question every alert provokes: since when?"""
     config = _load(args.config)
@@ -426,6 +461,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_bands.add_argument("--json", action="store_true", help="machine-readable output")
     p_bands.set_defaults(func=cmd_bands)
+
+    p_status = sub.add_parser("status", help="is the canary itself alive and reporting?")
+    p_status.add_argument(
+        "--expect-every",
+        metavar="INTERVAL",
+        help="how often this is scheduled, e.g. 24h. Enables the overdue check.",
+    )
+    p_status.add_argument("--limit", type=int, default=20, help="runs to consider (default: 20)")
+    p_status.add_argument("--strict", action="store_true", help="exit 2 if the canary is unhealthy")
+    p_status.add_argument("--json", action="store_true", help="machine-readable output")
+    p_status.set_defaults(func=cmd_status)
 
     p_hist = sub.add_parser("history", help="what past runs recorded, and when a signal moved")
     p_hist.add_argument("--probe", help="probe id (with --signal)")

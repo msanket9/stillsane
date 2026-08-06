@@ -25,7 +25,7 @@ but every caller doing `json.loads(response)` is now throwing.
 
 ```
 DRIFT  extract_invoice @ prod
-  semantic_distance           0.133  band <=0.03745 (floor)   z=+17.3
+  semantic_distance           0.133  band <=0.05626           z=+8.9
   length_chars                  106  band 36..52 (floor)      z=+23.2
   completion_tokens              26  band 7..15 (floor)       z=+11.2
   valid_json               0% valid  band >=1
@@ -45,13 +45,15 @@ DRIFT  extract_invoice @ prod
 Exit code 1, so this fails a build. Nothing errored, nothing was slower, and no
 conventional monitor would have noticed.
 
-That `band <=0.03745` was not a number anyone chose, and the `(floor)` beside it
-is the tool being honest about how it got there. This example runs against a tidy
-mock whose samples barely vary, so there was too little spread to learn from and
-the band fell back to a built-in floor. Against a real endpoint it is measured from the
-probe's own behaviour instead, and stillsane tells you which of the two happened
-rather than presenting a defaulted number as a measured one. Either way the
-prose-wrapped version sits seventeen times outside it.
+That `band <=0.05626` was not a number anyone chose. The baseline watched this
+probe vary in whitespace, number formatting and key order, and learned how much
+that is worth. The prose-wrapped version sits nearly nine times outside it.
+
+The two bands still marked `(floor)` are the tool being honest about how it got
+those: this example runs against a tidy mock whose lengths and token counts barely
+move, so there was too little spread to measure and they fell back to a built-in
+floor. stillsane says which of the two happened rather than presenting a defaulted
+number as a measured one. `stillsane bands` reports it in full.
 
 You can run exactly this in about thirty seconds, with no API key, from
 [`examples/invoice-extract/`](examples/invoice-extract/).
@@ -228,11 +230,15 @@ Related decisions, since they are the ones that determine whether this is usable
 
 - **Robust statistics throughout.** Median and MAD, not mean and standard
   deviation. At the sample counts anyone will actually pay for, one weird sample
-  dominates a standard deviation and barely moves a MAD. The known cost: MAD
-  collapses to zero when over half the samples are identical, which a
-  low-temperature model does often. The band then falls to its floor and can end up
-  tighter than the probe's own baseline. `stillsane bands` finds that case and says
-  so; it is not yet fixed in the estimator.
+  dominates a standard deviation and barely moves a MAD. The known cost is that a
+  MAD collapses to zero when over half the samples are identical, which a
+  low-temperature model does often, dropping the band onto its floor where it can
+  end up tighter than the probe's own baseline. When that happens the scale falls
+  back to an interquartile range, which survives the ties a MAD does not. The
+  fallback is conditional because an IQR breaks down at 25% against a MAD's 50%, so
+  reaching for it unconditionally would loosen every band in the tool. Samples that
+  really are all identical produce a zero IQR too, and then the floor is the honest
+  answer. `stillsane bands` reports whichever happened.
 - **Baselines never update themselves.** Only `stillsane baseline` replaces one. A
   monitor that silently re-baselines has defined drift out of existence.
 - **Clean runs tighten the band, but widening is capped.** Passing runs feed back
@@ -259,6 +265,52 @@ watch`, a sleep loop that is honest about being one. cron or CI does this better
 they survive reboots, they log, and they can tell you when the job itself stopped
 running, which a bare process cannot do for itself. There is also `stillsane
 bands`, below.
+
+### Is the canary alive?
+
+Every other command answers a question about the model. `stillsane status` answers
+one about the tool: has it actually been running, and did its runs measure
+anything.
+
+```bash
+stillsane status --expect-every 24h
+```
+
+```
+last run        22 minutes ago   pass
+last clean run  22 minutes ago
+runs recorded   6
+recent          P P E P E P   (oldest to newest)
+
+  essay_maintainability @ claude  errored 2 of 5 run(s)
+                                    timeout after 60.0s
+                                    ReadError:
+  extract_invoice @ claude        errored 1 of 6 run(s)
+                                    ReadError:
+  summarise_incident @ claude     errored 1 of 6 run(s)
+                                    ReadError:
+
+2 of the last 6 run(s) ended in transport errors rather than drift. Nothing
+was measured on those runs. That is an environment problem, not a model one.
+```
+
+That is a real week of scheduled runs, and it is the failure mode worth planning
+for. A monitor can fail for reasons that have nothing to do with what it watches:
+a laptop asleep at the trigger, a network that had not come up, a timeout tuned
+for a faster probe. Each one produces a run that completed, recorded an ERROR and
+moved on. `check` cannot report it because each run only sees itself, and
+`history` shows the rows but leaves you to notice the pattern.
+
+Two distinctions do most of the work. **Transport errors are not drift**: a run
+that could not reach the endpoint measured nothing, so counting it as healthy
+overstates your coverage. And **silence is not success**: a canary that stopped
+running looks exactly like one with nothing to report, which is what
+`--expect-every` exists to disambiguate. Without it, staleness is unknowable and
+the command says so rather than guessing a cadence from past gaps.
+
+`--strict` exits 2 when the canary is unhealthy or overdue, for a second cron job
+whose only purpose is to notice that the first one stopped. `--json` gives the
+same verdict structured.
 
 ### Inspecting the bands
 
@@ -436,7 +488,7 @@ judge:
 
 ```
 DRIFT  extract_invoice @ prod
-  semantic_distance           0.133  band <=0.03745       z=+17.3
+  semantic_distance           0.133  band <=0.05626           z=+8.9
   valid_json               0% valid  band >=1
   ...
   -> breaking: Still valid JSON, but now wrapped in conversational prose.

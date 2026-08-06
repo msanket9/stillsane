@@ -45,7 +45,7 @@ stillsane check
 
 ```
 DRIFT  extract_invoice @ prod
-  semantic_distance           0.133  band <=0.03745 (floor)   z=+17.3
+  semantic_distance           0.133  band <=0.05626           z=+8.9
   length_chars                  106  band 36..52 (floor)      z=+23.2
   completion_tokens              26  band 7..15 (floor)       z=+11.2
   valid_json               0% valid  band >=1
@@ -64,19 +64,21 @@ DRIFT  extract_invoice @ prod
 
 Exit code 1, so this fails a build.
 
-Note the `(floor)` markers on those three signals. This mock cycles three fixed
-phrasings, so they showed too little spread to measure and their bands fell back
-to a built-in floor. That is the tool refusing to present a defaulted number as a
-measured one. `valid_json` carries no marker because its band is not a
-measurement at all: it passed every baseline sample, so any failure now counts.
+Note what the semantic band did. This mock cycles three fixed phrasings that
+differ in whitespace, number formatting and key order, and the baseline learned
+that a distance up to `0.056` is normal for this probe. The prose-wrapped version
+sits at `0.133`, nearly nine times outside it. Nobody picked that threshold; it
+came from the probe's own behaviour.
 
-Run `stillsane baseline` here and it reports the same thing at capture time,
-naming `semantic_distance`. It lists only the distance signals, so the floors on
-`length_chars` and `completion_tokens` surface at check time instead.
+The `(floor)` markers on the other two are the tool being honest about a different
+situation. Lengths and token counts barely move across those three phrasings, so
+there was too little spread to measure and those bands fell back to a built-in
+floor rather than presenting a defaulted number as a measured one. `valid_json`
+carries no marker because its band is not a measurement at all: it passed every
+baseline sample, so any failure now counts.
 
-Against a real endpoint the bands are learned from the probe's own behaviour and
-the markers disappear. Either way the comparison holds: the prose-wrapped version
-sits at `0.133`, seventeen times outside the band. Nobody picked that threshold.
+`stillsane bands` reports all of this from the stored baseline, without a network
+call or an API key, and names any band that will misreport.
 
 Note also what `has_keys` did: nothing. It is not in the list of signals that
 moved, because `total` and `due_date` are both still there. The data survived and
