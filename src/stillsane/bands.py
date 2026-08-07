@@ -28,6 +28,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 
+import numpy as np
+
 from .compare.variance import EPS, BandConfig, robust_band, robust_centre_scale
 from .models import Band, Direction
 from .signals.base import PairwiseSignal, PointwiseSignal, Signal
@@ -74,6 +76,13 @@ class SignalBand:
     #: How much of the baseline the band already excludes.
     outside: int
     finding: Finding | None = None
+    #: Estimated share of clean runs this band would report as drift, in percent.
+    #: None when there is not enough baseline to simulate against.
+    false_alarm_pct: float | None = None
+    #: How many values a single check reduces to its median. Recorded because the
+    #: estimate means nothing without it: the median of three values scatters far
+    #: more than the median of twenty.
+    draw: int = 0
 
     @property
     def outside_pct(self) -> float:
@@ -114,20 +123,87 @@ def no_embedder() -> _NoEmbedder:
     return _NoEmbedder()
 
 
-def _classify(band: Band, values: Sequence[float], raw_scale: float) -> tuple[int, Finding | None]:
-    """How much of the baseline the band excludes, and what that means."""
+#: Simulation draws. Enough that the estimate is stable to about a tenth of a
+#: percent, cheap enough that inspecting a config full of probes stays instant.
+TRIALS = 4000
+
+#: Fixed seed. An inspection command that returns a slightly different number every
+#: time it runs is one nobody can quote in a bug report or diff between releases.
+SEED = 20260807
+
+
+def false_alarm_rate(
+    values: Sequence[float], band: Band, draw: int, trials: int = TRIALS
+) -> float | None:
+    """Share of clean runs this band would call drift, as a fraction.
+
+    `bands` used to report how many individual baseline values fell outside the
+    band, which is a different and more alarming question than the one that
+    matters. A check never compares a single value: it reduces the run to a median
+    (`evaluate_pairwise` and `evaluate_pointwise` both do) and compares that. A
+    heavy tail can put 18% of individual pairs outside a band while almost never
+    moving the median far enough to fire.
+
+    So simulate the thing that actually happens. Resample from the baseline's own
+    distribution, take the median of a check-sized draw, and count how often it
+    lands outside. That is the false alarm rate under the null hypothesis that
+    nothing has drifted.
+
+    The assumption is that when nothing has changed, a check's distances look like
+    the baseline's own. That is precisely the assumption the band already encodes,
+    so this adds no new leap -- but it is an estimate from one baseline, not a
+    measured rate, and small baselines will estimate it coarsely.
+    """
+    if draw < 1 or len(values) < 2:
+        return None
+    rng = np.random.default_rng(SEED)
+    sampled = rng.choice(np.asarray(values, dtype=float), size=(trials, draw), replace=True)
+    medians = np.median(sampled, axis=1)
+    lower = -np.inf if band.lower is None else band.lower
+    upper = np.inf if band.upper is None else band.upper
+    outside = np.count_nonzero((medians < lower) | (medians > upper))
+    return float(outside) / trials
+
+
+#: Estimated false alarm rate, in percent, below which a heavy tail is not worth
+#: reporting. A band that fires on well under one clean run in a hundred is doing
+#: its job, however ragged the distribution behind it looks.
+FALSE_ALARM_FLOOR = 1.0
+
+
+def _classify(
+    band: Band,
+    values: Sequence[float],
+    raw_scale: float,
+    false_alarm_pct: float | None,
+) -> tuple[int, Finding | None]:
+    """How much of the baseline the band excludes, and whether that will bite.
+
+    The count and the consequence are different questions, and keying the finding
+    off the count alone cried wolf. Measured against real baselines: an essay probe
+    had 15% of its pairs outside the band and an estimated false alarm rate of 0%,
+    because a pairwise check takes the median of two dozen distances and the tail
+    never moves it far enough. A latency signal had 12% of its values outside and a
+    4.1% false alarm rate, because its check median is over three values and
+    scatters. The second is worth an alert; the first is a distribution shape.
+
+    A collapse still reports regardless of the estimate. That one is structural: the
+    band was never measured, so the rate it implies is not evidence of anything.
+    """
     outside = sum(1 for v in values if not band.contains(v))
 
     if outside and raw_scale <= EPS:
         return outside, Finding.COLLAPSED
-    if outside:
+    if outside and (false_alarm_pct or 0.0) >= FALSE_ALARM_FLOOR:
         return outside, Finding.SELF_OUTSIDE
-    if band.floored:
+    if band.floored and not outside:
         return outside, Finding.FLOORED_STABLE
     return outside, None
 
 
-def _describe(signal: Signal, values: Sequence[float], unit: str, cfg: BandConfig) -> SignalBand | None:
+def _describe(
+    signal: Signal, values: Sequence[float], unit: str, cfg: BandConfig, draw: int = 0
+) -> SignalBand | None:
     """Rebuild one signal's band from stored numbers and judge it."""
     if not values:
         return None
@@ -142,7 +218,9 @@ def _describe(signal: Signal, values: Sequence[float], unit: str, cfg: BandConfi
         override=signal.band_override,
     )
     _, raw_scale = robust_centre_scale(values)
-    outside, finding = _classify(band, values, raw_scale)
+    rate = false_alarm_rate(values, band, draw)
+    pct = None if rate is None else 100.0 * rate
+    outside, finding = _classify(band, values, raw_scale, pct)
 
     return SignalBand(
         signal=signal.name,
@@ -154,10 +232,17 @@ def _describe(signal: Signal, values: Sequence[float], unit: str, cfg: BandConfi
         raw_scale=raw_scale,
         outside=outside,
         finding=finding,
+        false_alarm_pct=None if rate is None else 100.0 * rate,
+        draw=draw,
     )
 
 
-def inspect(baseline: Baseline, signals: Sequence[Signal], cfg: BandConfig) -> ProbeBands:
+def inspect(
+    baseline: Baseline,
+    signals: Sequence[Signal],
+    cfg: BandConfig,
+    check_samples: int = 3,
+) -> ProbeBands:
     """Recompute every band this baseline would be judged against.
 
     Pairwise signals read their distances straight from the pooled record, which is
@@ -168,17 +253,25 @@ def inspect(baseline: Baseline, signals: Sequence[Signal], cfg: BandConfig) -> P
     no way to be mentioned at all.
     """
     out: list[SignalBand] = []
+    # What one check reduces to a median. A pairwise signal compares every current
+    # sample against every baseline one, so its draw is the product; a pointwise
+    # signal only has the current run's own values. The difference is large and it
+    # is why the two get very different false alarm rates off the same spread.
+    n_baseline = max(1, len(baseline.usable))
+    pairwise_draw = check_samples * n_baseline
 
     for signal in signals:
         if isinstance(signal, PairwiseSignal):
-            described = _describe(signal, baseline.pooled.get(signal.name) or [], "pairs", cfg)
+            described = _describe(
+                signal, baseline.pooled.get(signal.name) or [], "pairs", cfg, pairwise_draw
+            )
         elif isinstance(signal, PointwiseSignal):
             # A None means the signal does not apply to these samples, which is a
             # normal condition rather than an error: Anthropic reports no
             # `system_fingerprint` and names its token counts differently, so those
             # signals stay quiet instead of erroring. Nothing to show either.
             values = [v for v in (signal.value(s) for s in baseline.usable) if v is not None]
-            described = _describe(signal, values, "values", cfg)
+            described = _describe(signal, values, "values", cfg, check_samples)
         else:
             # Categorical signals have no band. Any change is an event, so there is
             # no normal range to be right or wrong about.
@@ -205,11 +298,12 @@ _EXPLAIN = {
     Finding.COLLAPSED: (
         "the median and MAD are both zero, so the scale could not be measured and the "
         "band fell to its floor. The baseline itself spans {min:.4g}..{max:.4g}, and "
-        "{outside} of {n} {unit} ({pct:.0f}%) fall outside the band. A check drawing "
-        "those reports drift against an endpoint that has not changed. Typically the "
-        "output is bimodal: identical on most runs, formatted differently on the rest. "
-        "More samples will not help while one form dominates, because the median stays "
-        "put and the MAD stays zero."
+        "{outside} of {n} {unit} ({pct:.0f}%) fall outside the band that was built "
+        "from them. The width is a built-in default rather than anything this probe "
+        "demonstrated, so it is arbitrary in both directions: see the rate above for "
+        "how often it actually fires. Typically the output is bimodal, identical on "
+        "most runs and formatted differently on the rest. More samples will not help "
+        "while one form dominates, because the median stays put and the MAD stays zero."
     ),
     Finding.SELF_OUTSIDE: (
         "{outside} of {n} {unit} ({pct:.0f}%) fall outside the band built from them, "
@@ -222,6 +316,10 @@ _EXPLAIN = {
         "about: fine if the probe really is this steady."
     ),
 }
+
+
+def _wrap(text: str) -> list[str]:
+    return textwrap.wrap(text, width=78)
 
 
 def render(probes: Sequence[ProbeBands], verbose: bool = False) -> str:
@@ -265,6 +363,14 @@ def render(probes: Sequence[ProbeBands], verbose: bool = False) -> str:
             lines.append(
                 f"  {sb.signal:<22} band {band:<22} {sb.n:>3} {sb.unit:<7} spread {spread}"
             )
+            # Only worth printing when it is not zero. A band that never fires on a
+            # clean run is the normal case and saying so on every row would bury the
+            # rows where it does.
+            if sb.false_alarm_pct:
+                lines.append(
+                    f"    would report drift on ~{sb.false_alarm_pct:.1f}% of clean runs "
+                    f"(median of {sb.draw} {sb.unit})"
+                )
 
             if sb.finding is not None:
                 detail = _EXPLAIN[sb.finding].format(
@@ -294,8 +400,21 @@ def render(probes: Sequence[ProbeBands], verbose: bool = False) -> str:
     if suspect:
         names = ", ".join(sorted({s.signal for s in suspect}))
         lines.append(f"{len(suspect)} band(s) will misreport: {names}")
-        lines.append("Recapture will not help a collapsed band. Consider a probe whose output")
-        lines.append("varies less arbitrarily, or pin the band explicitly in config.")
+        # The two findings want opposite advice, so giving both at once made half
+        # of it wrong on every report.
+        if any(s.finding is Finding.COLLAPSED for s in suspect):
+            lines += _wrap(
+                "A collapsed band is not fixed by recapturing: while one output form "
+                "dominates, the median stays put and the scale stays zero. Constrain "
+                "the prompt so the probe has one output regime, or pin the band "
+                "explicitly in config."
+            )
+        else:
+            lines += _wrap(
+                "These have a real scale and a tail the band does not cover. Raise "
+                "`baseline_samples` so the tail is better measured, or accept the "
+                "rate above as the cost of catching smaller moves."
+            )
     else:
         lines.append("All bands look sound.")
 
@@ -333,6 +452,10 @@ def payload(probes: Sequence[ProbeBands]) -> dict:
                         "raw_scale": sb.raw_scale,
                         "outside": sb.outside,
                         "outside_pct": round(sb.outside_pct, 2),
+                        "false_alarm_pct": (
+                            None if sb.false_alarm_pct is None else round(sb.false_alarm_pct, 2)
+                        ),
+                        "check_draw": sb.draw,
                         "band": {
                             "center": sb.band.center,
                             "scale": sb.band.scale,

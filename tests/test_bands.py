@@ -13,7 +13,15 @@ import json
 import pytest
 from conftest import sample
 
-from stillsane.bands import Finding, as_json, inspect, no_embedder, payload, render
+from stillsane.bands import (
+    FALSE_ALARM_FLOOR,
+    Finding,
+    as_json,
+    inspect,
+    no_embedder,
+    payload,
+    render,
+)
 from stillsane.compare import BandConfig
 from stillsane.signals import build_signals
 from stillsane.store.baseline import Baseline
@@ -133,6 +141,63 @@ def test_heavy_tail_is_self_outside_not_collapsed(signals_for):
     assert sd.raw_scale > 0
     assert sd.outside >= 1
     assert sd.finding is Finding.SELF_OUTSIDE
+
+
+# --- False alarm rate, the number that actually matters --------------------
+
+
+def test_wide_draw_absorbs_a_tail_that_the_pair_count_panics_about(signals_for):
+    """The bug this fixes, from a real baseline.
+
+    An essay probe had 15% of its baseline pairs outside the band and was reported
+    as about to misreport. It was not: a pairwise check takes the median of two
+    dozen cross distances, and a tail that size never moves a median of 24 far
+    enough to fire. Counting individual pairs answered a question nobody asked.
+    """
+    pooled = {"semantic_distance": [0.12, 0.13, 0.14, 0.15, 0.16, 0.17, 0.30, 0.31]}
+    report = inspect(baseline_with(pooled, [sample("x") for _ in range(8)]),
+                     signals_for(), CFG, check_samples=3)
+    sd = find(report, "semantic_distance")
+    assert sd.outside > 0                             # the tail is real
+    assert sd.draw == 24                              # but a check medians 24 of them
+    assert sd.false_alarm_pct < FALSE_ALARM_FLOOR     # so it almost never fires
+    assert sd.finding is None                         # and is therefore not a fault
+    assert not report.suspect
+
+
+def test_narrow_draw_does_not_absorb_the_same_tail(signals_for):
+    """Same spread, three values instead of twenty-four, and now it fires.
+
+    This is why the draw size is reported alongside the rate: they are the same
+    distribution and opposite verdicts.
+    """
+    samples = [sample("x" * n) for n in (40, 41, 42, 43, 44, 45, 120, 130)]
+    report = inspect(baseline_with(samples=samples), signals_for(), CFG, check_samples=3)
+    lc = find(report, "length_chars")
+    assert lc.draw == 3
+    assert lc.false_alarm_pct > 0
+
+
+def test_false_alarm_estimate_is_deterministic(signals_for):
+    """A number that changes each run cannot be quoted in a bug report."""
+    pooled = {"semantic_distance": [0.05, 0.06, 0.07, 0.055, 0.065, 0.06, 0.9]}
+    first = find(inspect(baseline_with(pooled), signals_for(), CFG), "semantic_distance")
+    second = find(inspect(baseline_with(pooled), signals_for(), CFG), "semantic_distance")
+    assert first.false_alarm_pct == second.false_alarm_pct
+
+
+def test_collapsed_band_reports_regardless_of_the_estimate(signals_for):
+    """A band that was never measured makes no claim the rate could vindicate."""
+    sd = find(inspect(baseline_with({"semantic_distance": COLLAPSED_BIMODAL}),
+                      signals_for(), CFG), "semantic_distance")
+    assert sd.finding is Finding.COLLAPSED
+
+
+def test_false_alarm_needs_something_to_resample(signals_for):
+    """One value is not a distribution, so decline rather than invent a rate."""
+    sd = find(inspect(baseline_with({"semantic_distance": [0.05]}), signals_for(), CFG),
+              "semantic_distance")
+    assert sd.false_alarm_pct is None
 
 
 # --- Pointwise coverage, the gap this closes ------------------------------

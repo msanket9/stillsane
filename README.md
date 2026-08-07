@@ -327,25 +327,25 @@ appear in the capture-time warning, and names the ones that will misreport:
 
 ```
 extract_invoice @ claude   (v1, 8 sample(s), captured 2026-08-04)
-  semantic_distance      band <=0.02 (floor)          31 pairs   spread 0..0.1276
+  semantic_distance      band <=0.02 (floor)          28 pairs   spread 0..0.1276
+    would report drift on ~0.2% of clean runs (median of 24 pairs)
     COLLAPSED: the median and MAD are both zero, so the scale could not be
     measured and the band fell to its floor. The baseline itself spans
-    0..0.1276, and 14 of 31 pairs (45%) fall outside the band. A check drawing
-    those reports drift against an endpoint that has not changed. Typically
-    the output is bimodal: identical on most runs, formatted differently on
-    the rest. More samples will not help while one form dominates, because the
-    median stays put and the MAD stays zero.
+    0..0.1276, and 6 of 28 pairs (21%) fall outside the band that was built
+    from them. The width is a built-in default rather than anything this probe
+    demonstrated, so it is arbitrary in both directions: see the rate above
+    for how often it actually fires. Typically the output is bimodal,
+    identical on most runs and formatted differently on the rest. More samples
+    will not help while one form dominates, because the median stays put and
+    the MAD stays zero.
   length_chars           band 60..76 (floor)           8 values  spread 56..68
+    would report drift on ~4.7% of clean runs (median of 3 values)
     COLLAPSED: ...
-  defaulted to a floor, samples agree: latency_ms
-  3 other band(s) look sound
-
-summarise_incident @ claude   (v1, 8 sample(s), captured 2026-08-04)
-  3 other band(s) look sound
 
 2 band(s) will misreport: length_chars, semantic_distance
-Recapture will not help a collapsed band. Consider a probe whose output
-varies less arbitrarily, or pin the band explicitly in config.
+A collapsed band is not fixed by recapturing: while one output form dominates,
+the median stays put and the scale stays zero. Constrain the prompt so the
+probe has one output regime, or pin the band explicitly in config.
 ```
 
 (The second `COLLAPSED` paragraph is elided above; it repeats the first with that
@@ -361,6 +361,30 @@ already sits outside it.
 More samples do not fix that one, which is why it gets a different message from an
 ordinary floored band. While one formatting dominates, the median stays put and
 the MAD stays zero however many you take.
+
+It also estimates how often each band would cry wolf:
+
+```
+  latency_ms             band <=5174                   8 values  spread 2360..7144
+    would report drift on ~4.1% of clean runs (median of 3 values)
+```
+
+That number is the one worth acting on, and it is not the same as how much of the
+baseline sits outside the band. A check never compares a single value: it reduces
+the run to a median and compares that. So the estimate resamples from the
+baseline's own distribution, takes the median of a check-sized draw, and counts how
+often it lands outside.
+
+The difference is large. On a real baseline, an essay probe had 15% of its pairs
+outside its band and an estimated false alarm rate of **0%**, because a pairwise
+check medians two dozen distances and the tail never moves it far enough. A latency
+signal had 12% of its values outside and a **4.1%** rate, because its median is
+over three values and scatters. Same-looking numbers, opposite verdicts, which is
+why the draw size is printed alongside.
+
+It is an estimate from one baseline rather than a measured rate, and it assumes a
+clean run looks like the baseline. That is the assumption the band already makes,
+so it adds no new leap, but a small baseline estimates it coarsely.
 
 `--strict` exits 2 when any band will misreport, for a CI job that should fail on
 a baseline this shape. `-v` shows every band rather than only the interesting ones.

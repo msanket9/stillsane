@@ -235,7 +235,7 @@ def cmd_bands(args: argparse.Namespace) -> int:
                 missing.append(f"{probe.id} @ {target.name}")
                 continue
             signals = build_probe_signals(probe.checks)
-            reports.append(inspect_bands(baseline, signals, cfg))
+            reports.append(inspect_bands(baseline, signals, cfg, probe.check_samples))
 
     if not reports:
         if missing:
