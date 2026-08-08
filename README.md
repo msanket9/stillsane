@@ -312,6 +312,42 @@ the command says so rather than guessing a cadence from past gaps.
 whose only purpose is to notice that the first one stopped. `--json` gives the
 same verdict structured.
 
+### Since when?
+
+`status` says whether the canary is alive; `history` says what it recorded.
+
+```bash
+stillsane history
+```
+
+```
+Last 3 run(s), most recent first:
+  2026-08-08T04:01:56+00:00  pass    8a589970b3ad
+  2026-08-08T04:01:55+00:00  pass    b91bdf3d81c2
+  2026-08-08T04:01:54+00:00  pass    6a6934e6a887
+```
+
+A run can also land as `warn`, `drift` or `error`, and `error` means the endpoint
+could not be reached rather than that anything moved. See [Exit codes](#exit-codes).
+
+The question an alert always provokes is when it started, so one signal can be
+followed over time:
+
+```bash
+stillsane history --probe summarise_incident --target claude --signal semantic_distance
+```
+
+```
+semantic_distance  summarise_incident @ claude   (most recent first)
+  2026-08-08T03:49:14+00:00      0.02034  z=+0.0
+  2026-08-07T05:20:09+00:00      0.02952  z=+0.0
+  2026-08-06T05:14:46+00:00       0.0341  z=+0.2
+```
+
+`--signals` lists everything that has been recorded, so you do not have to
+remember signal names to look at your own data. Everything lives in
+`.stillsane/history.sqlite`.
+
 ### Inspecting the bands
 
 `check` tells you whether a probe moved. `stillsane bands` answers the question
