@@ -95,6 +95,18 @@ def render_template(value: Any, variables: dict[str, str]) -> Any:
     return value
 
 
+async def _backoff(seconds: float) -> None:
+    """The wait between retries, behind a seam.
+
+    A named function rather than a bare `asyncio.sleep` so the suite can replace the
+    waiting without replacing sleeping everywhere. Retry behaviour is worth testing;
+    ten seconds of real backoff spread across the tests that simulate dead endpoints
+    is how a fast suite quietly becomes one nobody runs.
+    """
+    if seconds > 0:
+        await asyncio.sleep(seconds)
+
+
 class Target(ABC):
     """Base for anything stillsane can point at."""
 
@@ -123,7 +135,39 @@ class Target(ABC):
         return headers
 
     async def call(self, probe: ProbeConfig, client: httpx.AsyncClient) -> Sample:
-        """One invocation. Never raises for anything the endpoint did."""
+        """One sample, retrying only failures that measured nothing.
+
+        The rule that matters is which failures are eligible. A timeout or a dropped
+        connection means the request never landed, so trying again asks the same
+        question a second time. A verdict is different: if the probe answered and the
+        answer was drift, asking again until it comes up clean is the same defect as
+        a monitor that silently re-baselines. So retries are gated on transport, and
+        `_attempt` reports that separately from whether the sample merely failed.
+
+        Four scheduled runs were lost to transient transport failures in one week
+        while building this, and every manual re-run minutes later succeeded, which
+        is what the default of one retry is calibrated against.
+        """
+        attempts = 1 + max(0, self.config.retries)
+        for attempt in range(1, attempts + 1):
+            sample, transient = await self._attempt(probe, client)
+            sample.attempts = attempt
+            if not transient or attempt == attempts:
+                return sample
+            # Backoff doubles, so a provider having a bad minute is not hammered.
+            await _backoff(self.config.retry_backoff_s * (2 ** (attempt - 1)))
+        return sample
+
+    async def _attempt(
+        self, probe: ProbeConfig, client: httpx.AsyncClient
+    ) -> tuple[Sample, bool]:
+        """One invocation. Never raises for anything the endpoint did.
+
+        Returns the sample and whether its failure is worth retrying. That flag is
+        deliberately not a field on `Sample`: it describes this attempt, not the
+        observation, and persisting it would invite someone to treat a stored sample
+        as retryable long after the fact.
+        """
         sample = Sample(probe_id=probe.id, target_name=self.name)
         method, url, headers, payload = self.build_request(probe)
 
@@ -140,7 +184,11 @@ class Target(ABC):
                 # Keep a snippet: the provider's error body is usually the fastest
                 # route to the cause, and it is gone once the run ends.
                 sample.text = response.text[:500]
-                return sample
+                # 429 and 5xx are the endpoint asking to be asked again. Every other
+                # 4xx is a wrong key, a wrong path or a malformed body, and repeating
+                # it just spends money to get the same answer more slowly.
+                retryable = response.status_code == 429 or response.status_code >= 500
+                return sample, retryable
 
             body = response.json()
             sample.raw = body if isinstance(body, dict) else {"response": body}
@@ -150,13 +198,20 @@ class Target(ABC):
         except httpx.TimeoutException:
             sample.latency_ms = (time.perf_counter() - started) * 1000.0
             sample.error = f"timeout after {self.config.timeout_s}s"
+            return sample, True
         except httpx.HTTPError as exc:
+            # Connection-level: refused, reset, DNS, a read that died mid-flight.
+            # The request did not land, so nothing was measured.
             sample.latency_ms = (time.perf_counter() - started) * 1000.0
             sample.error = f"{type(exc).__name__}: {exc}"
+            return sample, True
         except ValueError as exc:
+            # The endpoint answered with something that is not JSON. That is a
+            # contract problem rather than a blip, and it comes back identical.
             sample.latency_ms = (time.perf_counter() - started) * 1000.0
             sample.error = f"response was not valid JSON: {exc}"
-        return sample
+            return sample, False
+        return sample, False
 
 
 async def collect(

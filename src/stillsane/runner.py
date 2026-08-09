@@ -256,6 +256,11 @@ async def check(
                 baseline_version=baseline.version,
                 baseline_created=baseline.created,
             )
+            # Extra calls beyond one per sample. Attached here rather than inside
+            # `compare_probe` because it says nothing about whether the probe moved:
+            # it is a fact about reaching the endpoint, and the comparison layer
+            # deliberately knows nothing about transport.
+            verdict.retries = sum(max(0, s.attempts - 1) for s in samples)
             verdicts.append(verdict)
 
             if is_clean(verdict):

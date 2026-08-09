@@ -251,6 +251,14 @@ Related decisions, since they are the ones that determine whether this is usable
   compare rather than reporting your own edit as provider drift.
 - **A transport error is not drift.** A dead endpoint exits with a different code
   than a quality regression, because they call for different responses.
+- **Transport failures retry; verdicts never do.** A timeout or a dropped
+  connection means the request never landed, so asking again asks the same question.
+  A verdict is the opposite: re-running a probe because the answer was DRIFT is
+  rolling the dice until it comes up clean, which defines drift out of existence the
+  same way a silent re-baseline does. So `retries` covers timeouts, dropped
+  connections, 429s and 5xx, and nothing else. A 401 or a malformed body returns
+  identical on the second call and only costs money. Each sample records
+  `attempts`, so a flaky environment stays visible instead of being smoothed over.
 
 ---
 

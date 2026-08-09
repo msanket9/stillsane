@@ -40,6 +40,22 @@ def sample(
     )
 
 
+@pytest.fixture(autouse=True)
+def _instant_retry_backoff(monkeypatch):
+    """Retries happen for real in these tests; the waiting between them does not.
+
+    Transport failures are simulated all over this suite, and every one of them now
+    retries with a production backoff. Left alone that is about ten seconds of
+    sleeping on a suite that otherwise runs in one, which is how a fast suite becomes
+    one people skip. The retry logic is still exercised; only the wait is skipped.
+    """
+
+    async def _no_wait(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("stillsane.targets.base._backoff", _no_wait)
+
+
 @pytest.fixture
 def embedder() -> HashingEmbedder:
     return HashingEmbedder()

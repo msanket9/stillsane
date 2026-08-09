@@ -112,6 +112,11 @@ class Sample:
     latency_ms: float | None = None
     http_status: int | None = None
     error: str | None = None
+    #: How many times the endpoint was called to produce this sample. Above one
+    #: means a transient transport failure was retried. Recorded rather than
+    #: swallowed: a run that only succeeded on the third try is still evidence that
+    #: the environment is unwell, and hiding it turns a flaky setup into a silent one.
+    attempts: int = 1
     ts: datetime = field(default_factory=_utcnow)
     #: Full decoded response body, kept for the report and for signals we have not
     #: thought of yet. Never used for comparison directly.
@@ -205,6 +210,12 @@ class ProbeVerdict:
     #: Representative outputs for the report's before/after block.
     baseline_excerpt: str | None = None
     observed_excerpt: str | None = None
+    #: Extra calls this probe's samples needed because a transport failure was
+    #: retried. Carried up to the report on purpose: a retry that recovers a run is
+    #: still evidence the environment is unwell, and a retry nobody can see turns a
+    #: flaky setup into a silent one, which is the failure the retry was meant to
+    #: make survivable rather than invisible.
+    retries: int = 0
 
     @property
     def moved(self) -> list[SignalVerdict]:

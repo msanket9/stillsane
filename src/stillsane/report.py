@@ -124,6 +124,16 @@ def render_probe(verdict: ProbeVerdict, paint: Painter, verbose: bool = False) -
         if quiet and verdict.moved:
             lines.append(paint.dim(f"  {quiet} other signal(s) unchanged"))
 
+    # Shown on a PASS too, which is the whole point. A run that only succeeded
+    # because a dropped connection was retried is a passing run against an unwell
+    # environment, and saying nothing there is how a flaky setup becomes a silent
+    # one -- the exact failure retrying was supposed to make survivable, not hide.
+    if verdict.retries:
+        calls = "call" if verdict.retries == 1 else "calls"
+        lines.append(
+            paint.dim(f"  recovered after {verdict.retries} retried {calls} (transport)")
+        )
+
     if verdict.level is not Level.PASS:
         lines += _excerpt_block(verdict, paint)
         if verdict.judge_note:
@@ -143,7 +153,12 @@ def render(result: RunResult, verbose: bool = False, colour: bool | None = None)
     for verdict in result.probes:
         # A passing probe is one line unless asked otherwise. The signal-to-noise
         # ratio of this output is what determines whether it gets read at all.
-        if verdict.level is Level.PASS and not verbose:
+        #
+        # A pass that needed a retry is the exception, and it is the case the note
+        # exists for: the endpoint dropped a connection and the run survived anyway.
+        # Taking the one-line shortcut there would hide it precisely when nothing
+        # else in the output is going to mention it.
+        if verdict.level is Level.PASS and not verbose and not verdict.retries:
             blocks.append(
                 f"{paint.level('PASS ', Level.PASS)}  {verdict.probe_id} @ {verdict.target_name}"
             )

@@ -37,6 +37,11 @@ def call(target, probe, handler):
 PROBE = ProbeConfig(id="p", prompt="say hello", system="be terse")
 OAI = TargetConfig(name="prod", base_url="https://api.example.com/v1", model="some-model")
 
+#: Retry behaviour with the wait taken out. The backoff is real and deliberate in
+#: production, but a test suite that sleeps through it stops being run.
+FAST_RETRY = OAI.model_copy(update={"retry_backoff_s": 0.0})
+NO_RETRY = OAI.model_copy(update={"retries": 0})
+
 
 # --- OpenAI-compatible ----------------------------------------------------
 
@@ -246,8 +251,13 @@ def test_malformed_json_becomes_a_sample():
     assert not sample.ok and "not valid JSON" in sample.error
 
 
-def test_one_bad_sample_does_not_lose_the_others():
-    """Losing four paid-for samples because the fifth failed would be wasteful."""
+def test_a_transient_blip_is_retried_and_recovered():
+    """A 500 is the endpoint asking to be asked again, so the sample survives.
+
+    Four scheduled runs were lost to transient transport failures in a single week
+    of running this against a real provider, and every manual re-run minutes later
+    succeeded. One retry turns those into data instead of gaps.
+    """
     calls = {"n": 0}
 
     def handler(request):
@@ -258,11 +268,93 @@ def test_one_bad_sample_does_not_lose_the_others():
 
     async def go():
         async with client_for(handler) as client:
-            return await collect(build_target(OAI), PROBE, 5, client=client)
+            return await collect(build_target(FAST_RETRY), PROBE, 5, client=client)
+
+    samples = asyncio.run(go())
+    assert len(samples) == 5
+    assert all(s.ok for s in samples)
+    # The recovery is recorded rather than hidden: a run that only worked on the
+    # second try is still evidence the environment is unwell.
+    assert sum(s.attempts for s in samples) == 6
+
+
+def test_one_persistently_bad_sample_does_not_lose_the_others():
+    """Losing four paid-for samples because the fifth failed would be wasteful.
+
+    Retries do not change this: once they are exhausted the sample stays failed and
+    the others still come back.
+    """
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        # Fails on its first attempt and again on its retry. Sequential because
+        # `collect` is otherwise concurrent, and "calls 2 and 3" only means "one
+        # sample twice" when the requests are not interleaved.
+        if calls["n"] in (2, 3):
+            return httpx.Response(500, text="blip")
+        return httpx.Response(200, json=oai_body())
+
+    async def go():
+        async with client_for(handler) as client:
+            return await collect(
+                build_target(FAST_RETRY), PROBE, 5, concurrency=1, client=client
+            )
 
     samples = asyncio.run(go())
     assert len(samples) == 5
     assert sum(1 for s in samples if s.ok) == 4
+
+
+def test_a_client_error_is_not_retried():
+    """A 401 or a 404 comes back identical, so repeating it only spends money."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(401, text="nope")
+
+    async def go():
+        async with client_for(handler) as client:
+            return await collect(build_target(FAST_RETRY), PROBE, 1, client=client)
+
+    samples = asyncio.run(go())
+    assert not samples[0].ok
+    assert calls["n"] == 1
+    assert samples[0].attempts == 1
+
+
+def test_a_malformed_body_is_not_retried():
+    """Not-JSON is a contract problem, and it will be not-JSON again."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(200, text="not json")
+
+    async def go():
+        async with client_for(handler) as client:
+            return await collect(build_target(FAST_RETRY), PROBE, 1, client=client)
+
+    samples = asyncio.run(go())
+    assert not samples[0].ok
+    assert calls["n"] == 1
+
+
+def test_retries_can_be_switched_off():
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(503, text="down")
+
+    async def go():
+        async with client_for(handler) as client:
+            return await collect(build_target(NO_RETRY), PROBE, 1, client=client)
+
+    samples = asyncio.run(go())
+    assert not samples[0].ok
+    assert calls["n"] == 1
 
 
 # --- Plain HTTP target ----------------------------------------------------
@@ -378,3 +470,23 @@ def test_plain_paths_still_work():
     """The filter syntax must not disturb the common case."""
     assert dotted_get({"choices": [{"message": {"content": "x"}}]},
                       "choices.0.message.content") == "x"
+
+
+def test_a_recovered_run_says_so_on_a_pass():
+    """The retry note must survive the one-line PASS shortcut.
+
+    A pass that only happened because a dropped connection was retried is the case
+    the note exists for. `render` short-circuits passing probes to a single line, so
+    the note was invisible in exactly the situation it was written for.
+    """
+    from stillsane.models import Level, ProbeVerdict, RunResult
+    from stillsane.report import render
+
+    recovered = RunResult(
+        probes=[ProbeVerdict(probe_id="p", target_name="t", level=Level.PASS, retries=2)]
+    )
+    clean = RunResult(probes=[ProbeVerdict(probe_id="p", target_name="t", level=Level.PASS)])
+
+    assert "recovered after 2 retried calls" in render(recovered, colour=False)
+    # And a clean pass stays one line, or the report gets noisier for no reason.
+    assert "recovered" not in render(clean, colour=False)

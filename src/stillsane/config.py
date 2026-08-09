@@ -44,6 +44,22 @@ class TargetConfig(BaseModel):
     temperature: float | None = None
     max_tokens: int | None = None
 
+    #: Extra attempts for a sample that failed to reach the endpoint at all.
+    #:
+    #: Only transport failures retry: timeouts, dropped connections, 429s and 5xx.
+    #: A verdict is never retried. Re-running a probe because the answer was DRIFT
+    #: would be rolling the dice until it comes up clean, which is the same failure
+    #: as a monitor that silently re-baselines -- it defines drift out of existence.
+    #: The distinction is the one the exit codes already draw: a transport error
+    #: measured nothing, a drift verdict measured something and it moved.
+    #:
+    #: Defaults to one retry because a scheduled canary that loses a whole day to a
+    #: dropped connection is worse than one extra request, and `Sample.attempts`
+    #: keeps the retry visible rather than papering over a flaky environment.
+    retries: int = 1
+    #: Seconds before the first retry. Doubles for each subsequent attempt.
+    retry_backoff_s: float = 2.0
+
     #: Watch `system_fingerprint` and friends for the backend model changing
     #: underneath a stable version string.
     watch_fingerprint: bool = True
@@ -195,6 +211,11 @@ class JudgeConfig(BaseModel):
             timeout_s=self.timeout_s,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
+            # The judge does not retry, unlike a probe. It is advisory, it is the
+            # only layer billed per alert, and a judge that cannot answer already
+            # degrades to silence with the measurement intact. Spending a second
+            # call to recover a note nobody is blocked on is the wrong trade.
+            retries=0,
         )
 
 
