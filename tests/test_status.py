@@ -23,8 +23,8 @@ def ts(hours_ago: float) -> str:
     return (NOW - timedelta(hours=hours_ago)).isoformat()
 
 
-def run(run_id: str, hours_ago: float, level: str):
-    return (run_id, ts(hours_ago), level)
+def run(run_id: str, hours_ago: float, level: str, retries: int = 0):
+    return (run_id, ts(hours_ago), level, retries)
 
 
 def result(run_id: str, hours_ago: float, probe: str, level: str, signal="semantic_distance",
@@ -250,3 +250,28 @@ def test_json_round_trips():
     assert data["tool"] == "stillsane"
     assert data["command"] == "status"
     assert data["healthy"] is True
+
+
+def test_recovered_transport_failures_are_reported_not_absorbed():
+    """A pass that needed a retry is still a pass against an unwell environment.
+
+    The retry exists so a dropped connection does not cost a day of data. If it
+    also made the flakiness invisible it would have traded a loud problem for a
+    silent one, which is the failure this whole command exists to prevent.
+    """
+    status = build(
+        [run("r2", 1, "pass", retries=2), run("r1", 25, "pass")],
+        [result("r2", 1, "p", "pass"), result("r1", 25, "p", "pass")],
+        expect_every_s=parse_every("24h"),
+    )
+    assert status.total_retries == 2
+    assert status.healthy  # recovered runs are still healthy runs
+    assert "retried calls   2" in render(status)
+    assert payload(status)["total_retries"] == 2
+
+
+def test_no_retries_means_no_retry_line():
+    """A clean week should not carry a row of zeroes."""
+    status = build([run("r1", 1, "pass")], [result("r1", 1, "p", "pass")])
+    assert status.total_retries == 0
+    assert "retried calls" not in render(status)

@@ -204,9 +204,9 @@ def cmd_baseline(args: argparse.Namespace) -> int:
             "that stable, which is fine, or it needs more samples to reveal its variation.\n"
             "Raise `baseline_samples` and recapture if you expect it to vary."
         )
-    # This list only ever covers the pairwise signals, since pointwise ones are not
-    # pooled and so are not visible from here. `bands` recomputes all of them, and
-    # is also the only place a band that is floored *and wrong* gets named as such.
+    # The list above now covers pointwise signals too, but it still only says a band
+    # was defaulted, not whether that will misreport. `bands` is where a floored band
+    # that is also *wrong* gets named, along with its estimated false alarm rate.
     print("\nTo see every band and whether it holds:\n  stillsane bands")
     return 0
 
@@ -344,7 +344,7 @@ def cmd_history(args: argparse.Namespace) -> int:
         print("No runs recorded yet. Run `stillsane check` first.", file=sys.stderr)
         return 1
     print(f"Last {len(runs)} run(s), most recent first:")
-    for run_id, finished, level in runs:
+    for run_id, finished, level, _retries in runs:
         print(f"  {finished:<20}  {level:<6}  {run_id}")
     print("\nFor one signal over time:")
     print("  stillsane history --probe <id> --target <name> --signal semantic_distance")

@@ -12,7 +12,7 @@ moved outside the range that probe normally varies by. It observes from outside,
 over plain HTTP. There is nothing to instrument, no SDK to import, no account, and
 no hosted service.
 
-> **Status: early, v0.0.7.** Everything described below works. The config format
+> **Status: early, v0.0.8.** Everything described below works. The config format
 > may still change before 0.1. See [Status](#status).
 
 ---
@@ -466,6 +466,8 @@ targets:
     model: some-model-id
     api_key_env: PROVIDER_API_KEY   # the variable name, never the key itself
     watch_fingerprint: true
+    timeout_s: 60                   # per request
+    retries: 1                      # transport failures only, never a verdict
 
 probes:
   - id: extract_invoice
@@ -480,6 +482,57 @@ probes:
 alerts:
   webhook: https://hooks.example.com/...
 ```
+
+**Monitoring your own app rather than a model API.** This is the case the tool is
+really for: most people are not watching a raw model, they are watching the thing
+they shipped, which has its own retrieval, prompt assembly and bugs in front of it.
+Use `type: http` and describe the request:
+
+```yaml
+targets:
+  - name: prod
+    type: http
+    base_url: https://your-app.example.com
+    path: /api/extract
+    method: POST                       # the default
+    headers:
+      x-tenant: acme
+    body:
+      document: "{{prompt}}"           # {{prompt}} and {{system}} are substituted
+    response_path: data.reply          # where the text lives in the response
+```
+
+**Providers that do not use `Authorization: Bearer`.** Anthropic wants
+`x-api-key` with no prefix, Azure wants `api-key`. Both are reachable without
+putting a live secret in `headers`:
+
+```yaml
+targets:
+  - name: claude
+    type: http
+    base_url: https://api.anthropic.com
+    path: /v1/messages
+    api_key_env: ANTHROPIC_API_KEY
+    api_key_header: x-api-key
+    api_key_prefix: ""
+    headers:
+      anthropic-version: "2023-06-01"
+    body:
+      model: claude-opus-5
+      max_tokens: 2048
+      messages:
+        - role: user
+          content: "{{prompt}}"
+    response_path: content[type=text].text
+```
+
+`response_path` takes dotted paths with indexes (`choices.0.message.content`) and
+a filter form (`content[type=text].text`). The filter matters on Anthropic: with
+thinking enabled `content.0` is the thinking block, not the answer.
+
+Also on a target: `timeout_s`, `retries`, `retry_backoff_s`, `temperature`,
+`max_tokens`, and `escalate_fingerprint` to make a changed fingerprint fail rather
+than warn.
 
 `samples: 5` also works and sets the baseline count.
 

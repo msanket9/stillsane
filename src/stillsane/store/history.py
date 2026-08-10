@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS runs (
     run_id     TEXT PRIMARY KEY,
     started    TEXT NOT NULL,
     finished   TEXT,
-    level      TEXT NOT NULL
+    level      TEXT NOT NULL,
+    retries    INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS results (
     run_id     TEXT NOT NULL,
@@ -46,6 +47,23 @@ CREATE INDEX IF NOT EXISTS results_probe_signal
 """
 
 
+#: Columns added after the first release, as (table, column, definition).
+#:
+#: `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists, so a
+#: database written by an older version keeps its old shape forever and every insert
+#: naming the new column fails. Anyone who has been running this on a schedule has
+#: exactly such a file, and losing their history to read one number back would be a
+#: poor trade. Adding a nullable column is cheap and leaves old rows readable.
+_ADDED_COLUMNS = (("runs", "retries", "INTEGER NOT NULL DEFAULT 0"),)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, column, definition in _ADDED_COLUMNS:
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 class History:
     def __init__(self, root: Path | str) -> None:
         self.path = Path(root) / "history.sqlite"
@@ -56,6 +74,7 @@ class History:
         conn = sqlite3.connect(self.path)
         try:
             conn.executescript(SCHEMA)
+            _migrate(conn)
             yield conn
             conn.commit()
         finally:
@@ -66,12 +85,14 @@ class History:
         finished = (result.finished or datetime.now(timezone.utc)).isoformat(timespec="seconds")
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO runs (run_id, started, finished, level) VALUES (?, ?, ?, ?)",
+                "INSERT INTO runs (run_id, started, finished, level, retries) "
+                "VALUES (?, ?, ?, ?, ?)",
                 (
                     run_id,
                     result.started.isoformat(timespec="seconds"),
                     finished,
                     result.level.value,
+                    sum(p.retries for p in result.probes),
                 ),
             )
             conn.executemany(
@@ -99,17 +120,17 @@ class History:
             )
         return run_id
 
-    def recent(self, limit: int = 20) -> list[tuple[str, str, str]]:
+    def recent(self, limit: int = 20) -> list[tuple[str, str, str, int]]:
         with self._connect() as conn:
             rows = conn.execute(
                 # rowid breaks ties. Timestamps are stored at second resolution, so
                 # two runs in the same second sort arbitrarily without it -- and
                 # arbitrary order is exactly wrong for a "what happened when" view.
-                "SELECT run_id, finished, level FROM runs "
+                "SELECT run_id, finished, level, retries FROM runs "
                 "ORDER BY started DESC, rowid DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-        return [(r[0], r[1], r[2]) for r in rows]
+        return [(r[0], r[1], r[2], r[3]) for r in rows]
 
     def recorded_signals(self) -> list[tuple[str, str, str]]:
         """Every (probe, target, signal) that has history, for discovery.

@@ -126,3 +126,83 @@ def test_every_command_is_documented_somewhere():
     documented = {inv.split()[0] for _, inv in documented_invocations() if inv.split()}
     missing = sorted(set(subs) - documented)
     assert not missing, f"CLI commands with no mention in the docs: {', '.join(missing)}"
+
+
+# --- Config surface --------------------------------------------------------
+
+#: Fields a user is never expected to write. Keeping this list explicit is the
+#: point: adding a config option forces a decision about documenting it, rather
+#: than letting it ship discoverable only by reading the source.
+UNDOCUMENTED_BY_DESIGN = {
+    "name",  # structural, every example shows it without naming the field
+    "type",
+    "base_url",
+    "model",
+    "body",
+    "api_key_env",
+    "targets",  # probe-level target filter, niche
+    "system",
+}
+
+
+def config_models():
+    from stillsane.config import ProbeConfig, TargetConfig
+
+    return {"TargetConfig": TargetConfig, "ProbeConfig": ProbeConfig}
+
+
+def test_config_fields_are_documented():
+    """A config option nobody can find is one nobody uses.
+
+    This caught `retries` shipping undocumented, and then a larger hole behind it:
+    the README had no `type: http` example at all, so the target the tool is really
+    for -- your own app rather than a raw model API -- had no worked configuration,
+    and neither did any provider that does not use `Authorization: Bearer`.
+    """
+    readme = DOCS[0].read_text(encoding="utf-8")
+    missing = {}
+    for name, model in config_models().items():
+        gaps = [
+            f
+            for f in model.model_fields
+            if f not in readme and f not in UNDOCUMENTED_BY_DESIGN
+        ]
+        if gaps:
+            missing[name] = gaps
+    assert not missing, f"config options absent from the README: {missing}"
+
+
+def test_documented_config_keys_exist():
+    """The reverse: a documented key that no model accepts would be rejected.
+
+    Config is validated strictly, so a stale key in the README is not a cosmetic
+    error -- following the docs produces a validation failure on startup.
+    """
+    from stillsane.config import Config
+
+    known = set()
+    for model in (*config_models().values(), Config):
+        known |= set(model.model_fields)
+    # Alerts, judge and threshold blocks have their own models; collect them too.
+    from stillsane.config import AlertConfig, JudgeConfig, ThresholdConfig
+
+    for model in (AlertConfig, JudgeConfig, ThresholdConfig):
+        known |= set(model.model_fields)
+
+    # Only yaml blocks. The others are CLI output and JSON, where a colon means
+    # something else entirely and every line would read as a config key.
+    text = DOCS[0].read_text(encoding="utf-8")
+    documented = set()
+    for block in re.findall(r"```yaml\n(.*?)```", text, re.S):
+        for line in block.splitlines():
+            match = re.match(r"^\s*-?\s*([a-z_]{3,})\s*:", line)
+            if match:
+                documented.add(match.group(1))
+
+    # Two other things legitimately appear as keys in a yaml block: the check names
+    # accepted under `checks:`, which are identifiers rather than model fields, and
+    # whatever the user puts in `body:`, which is their request shape and not ours.
+    check_names = {"valid_json", "has_keys", "semantic_similarity", "max_length"}
+    body_keys = {"role", "content", "document", "messages", "message"}
+    strays = documented - known - check_names - body_keys
+    assert not strays, f"README documents config keys that no model accepts: {sorted(strays)}"

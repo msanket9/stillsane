@@ -127,6 +127,10 @@ class Status:
     probes: list[ProbeHealth]
     now: datetime
     expect_every_s: float | None = None
+    #: Extra calls across these runs that recovered a transport failure. A run that
+    #: only passed because a dropped connection was retried is still a run against an
+    #: unwell environment, so this is reported rather than absorbed.
+    total_retries: int = 0
 
     @property
     def last_run(self) -> datetime | None:
@@ -164,7 +168,7 @@ class Status:
 
 
 def assess(
-    runs: Sequence[tuple[str, str, str]],
+    runs: Sequence[tuple[str, str, str, int]],
     probe_rows: Sequence[tuple[str, str, str, str, str, str | None]],
     *,
     now: datetime | None = None,
@@ -178,7 +182,8 @@ def assess(
     """
     now = now or datetime.now(timezone.utc)
 
-    outcomes = [(_parse_ts(finished), level) for _, finished, level in runs]
+    outcomes = [(_parse_ts(finished), level) for _, finished, level, _r in runs]
+    total_retries = sum(r for *_, r in runs)
     outcomes.reverse()  # `recent` is newest first; a timeline reads the other way.
 
     # Rows arrive newest run first, so the first sighting of a probe is its most
@@ -225,6 +230,7 @@ def assess(
 
     return Status(
         total_runs=len(runs),
+        total_retries=total_retries,
         outcomes=outcomes,
         probes=probes,
         now=now,
@@ -255,6 +261,9 @@ def render(status: Status, limit: int = 20) -> str:
     lines.append(f"last run        {_ago(status.last_run, status.now)}   {last_level}")
     lines.append(f"last clean run  {_ago(status.last_clean, status.now)}")
     lines.append(f"runs recorded   {status.total_runs}")
+
+    if status.total_retries:
+        lines.append(f"retried calls   {status.total_retries}   (transport, recovered)")
 
     strip = " ".join(_MARK.get(level, "?") for _, level in status.outcomes[-limit:])
     lines.append(f"recent          {strip}   (oldest to newest)")
@@ -327,6 +336,7 @@ def payload(status: Status) -> dict:
         "overdue": status.overdue,
         "total_runs": status.total_runs,
         "error_runs": status.error_runs,
+        "total_retries": status.total_retries,
         "last_run": status.last_run.isoformat() if status.last_run else None,
         "last_clean_run": status.last_clean.isoformat() if status.last_clean else None,
         "silent_for_s": status.silent_for.total_seconds() if status.silent_for else None,
