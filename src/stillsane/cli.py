@@ -21,6 +21,9 @@ from .bands import as_json as bands_as_json
 from .bands import build_probe_signals
 from .bands import inspect as inspect_bands
 from .bands import render as render_bands
+from .calibrate import as_json as calibrate_as_json
+from .calibrate import assess as assess_calibration
+from .calibrate import render as render_calibration
 from .config import Config, load_config
 from .generate import (
     DEFAULT_MERGE_DISTANCE,
@@ -296,6 +299,34 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_calibrate(args: argparse.Namespace) -> int:
+    """What the recorded clean runs say about the thresholds.
+
+    Free and offline: the numbers were all written by past checks.
+    """
+    config = _load(args.config)
+    _, history = _store(config, args.config)
+    cfg = config.thresholds.to_band_config()
+
+    clean_runs, first, last = history.clean_run_span()
+    cal = assess_calibration(
+        history.clean_z(limit_runs=args.limit),
+        clean_runs=clean_runs,
+        warn_k=cfg.warn_k,
+        drift_k=cfg.drift_k,
+        first=first,
+        last=last,
+    )
+
+    print(calibrate_as_json(cal) if args.json else render_calibration(cal))
+
+    # --strict is for noticing that the thresholds have started firing on clean
+    # runs, which is a real false-alarm rate rather than a tuning opinion.
+    if args.strict and cal.false_alarms:
+        return EXIT_CODES[Level.WARN]
+    return 0
+
+
 def cmd_history(args: argparse.Namespace) -> int:
     """Answer the question every alert provokes: since when?"""
     config = _load(args.config)
@@ -472,6 +503,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.add_argument("--strict", action="store_true", help="exit 2 if the canary is unhealthy")
     p_status.add_argument("--json", action="store_true", help="machine-readable output")
     p_status.set_defaults(func=cmd_status)
+
+    p_cal = sub.add_parser(
+        "calibrate", help="what your clean runs say about warn_k and drift_k"
+    )
+    p_cal.add_argument(
+        "--limit", type=int, default=200, help="clean runs to consider (default: 200)"
+    )
+    p_cal.add_argument(
+        "--strict", action="store_true", help="exit 2 if a threshold fires on clean runs"
+    )
+    p_cal.add_argument("--json", action="store_true", help="machine-readable output")
+    p_cal.set_defaults(func=cmd_calibrate)
 
     p_hist = sub.add_parser("history", help="what past runs recorded, and when a signal moved")
     p_hist.add_argument("--probe", help="probe id (with --signal)")

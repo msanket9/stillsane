@@ -6,11 +6,18 @@ someone reading carefully rather than by anything automatic. A README is the fir
 thing a new user runs, and it ships as the PyPI long description, so a command that
 does not exist is not a documentation bug: it is the install appearing broken.
 
-Deliberately checks the CLI surface rather than command output. Reproducing the
-worked example needs the real embedder, which means a model download, and the
-default test run has to stay offline. Names and flags are the part that can be
-verified for free, and they cover the failure that actually happened: the README
-describing `stillsane bands` while the released build had no such command.
+Three layers, split by what each costs to verify.
+
+The CLI surface -- command names and flags -- and the config surface are free and
+offline, so they run every time. Between them they cover the failures that
+actually happened: a README describing `stillsane bands` while the released build
+had no such command, and `retries` shipping with no way to discover it.
+
+The documented *numbers* are the third layer and the expensive one. Reproducing
+the worked example needs the real embedder, because distances only mean anything
+on the scale that produced them. That test is marked `network` so the default run
+stays offline, and it exists because an estimator change moved the example's band
+and silently invalidated the headline block in both READMEs.
 """
 
 from __future__ import annotations
@@ -206,3 +213,88 @@ def test_documented_config_keys_exist():
     body_keys = {"role", "content", "document", "messages", "message"}
     strays = documented - known - check_names - body_keys
     assert not strays, f"README documents config keys that no model accepts: {sorted(strays)}"
+
+
+# --- Documented output -----------------------------------------------------
+
+
+@pytest.mark.network
+def test_documented_drift_output_still_matches_the_example():
+    """The numbers in the README, not just the command names.
+
+    This is the class the offline checks above cannot reach, and the one that has
+    actually bitten: an estimator change moved the example's band from `<=0.03745`
+    to `<=0.05626` and silently invalidated the headline block in both READMEs. It
+    was caught by reading, twice.
+
+    Marked `network` because reproducing those numbers needs the real embedder, and
+    distances only mean anything on the scale that produced them. The default run
+    stays offline; CI's embedder job is where this earns its keep.
+    """
+    import shutil
+
+    from stillsane.config import load_config
+    from stillsane.report import render as render_report
+    from stillsane.runner import check
+    from stillsane.store import BaselineStore, History
+
+    example = Path(__file__).resolve().parents[1] / "examples" / "invoice-extract"
+
+    # Import the provider's own list rather than restating it. A copy here would
+    # drift from the example silently, which is the failure this test exists to
+    # catch, one level up.
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("mock_provider", example / "mock_provider.py")
+    mock_provider = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mock_provider)
+
+    import asyncio
+    import itertools
+    import tempfile
+
+    import httpx
+
+    # Cycled, exactly as the provider does, so the numbers are the example's and
+    # not an artefact of every sample being identical.
+    variants = itertools.cycle(mock_provider.DRIFTED)
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "model": "mock-model-v1",
+                "system_fingerprint": "fp_a4f2b1",
+                "choices": [{"message": {"content": next(variants)}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 60, "completion_tokens": 26},
+            },
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Copy the committed baseline: `check` folds clean runs into the variance
+        # pool, and a test that edits a tracked file is a test nobody trusts.
+        state = Path(tmp) / ".stillsane"
+        shutil.copytree(example / ".stillsane", state)
+        config = load_config(str(example / "stillsane.yaml"))
+
+        async def go():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                return await check(config, BaselineStore(state), History(state), client=client)
+
+        result = asyncio.run(go())
+
+    rendered = render_report(result, colour=False)
+    signal_lines = [
+        line for line in rendered.splitlines() if line.startswith("  semantic_distance")
+    ]
+    assert signal_lines, f"expected a semantic_distance row, got:\n{rendered}"
+
+    for doc in DOCS:
+        text = doc.read_text(encoding="utf-8")
+        if "DRIFT  extract_invoice @ prod" not in text:
+            continue
+        for line in signal_lines:
+            assert line in text, (
+                f"{doc.name} documents a stale semantic_distance row.\n"
+                f"Real output now: {line!r}"
+            )

@@ -12,7 +12,7 @@ moved outside the range that probe normally varies by. It observes from outside,
 over plain HTTP. There is nothing to instrument, no SDK to import, no account, and
 no hosted service.
 
-> **Status: early, v0.0.8.** Everything described below works. The config format
+> **Status: early, v0.0.9.** Everything described below works. The config format
 > may still change before 0.1. See [Status](#status).
 
 ---
@@ -221,8 +221,33 @@ convert to a probability**. `z=6` is not a one-in-a-billion event. The threshold
 (`warn_k: 3`, `drift_k: 6`) are chosen empirically rather than derived from
 Gaussian tails, and they are config knobs precisely because the right values are
 an open question. Being straight about it: they were tuned against constructed
-drift scenarios, not yet against a long run on a real provider, so treat them as
-sensible starting points rather than settled numbers. The Mann-Whitney p-value reported alongside is
+drift scenarios rather than derived, so treat them as sensible starting points
+rather than settled numbers.
+
+You do not have to take that on faith for your own probes. `stillsane calibrate`
+reads the `z` values your clean runs already recorded and reports how close each
+signal came to firing:
+
+```
+  signal                        n   |z| p95   |z| max      headroom
+  length_chars                 26      1.08      1.51          2.0x
+  latency_ms                   26      0.67      0.83          3.6x
+  semantic_distance            26      0.51      0.68          4.4x
+```
+
+A clean run is one where nothing drifted, so its `z` values are what normal looks
+like, and the gap to `warn_k` is the margin before a false alarm. The reading
+above is from nine clean runs against a live provider: nothing came within 2x of
+the threshold, which says `warn_k: 3` is conservative rather than trigger-happy on
+those probes.
+
+It measures **headroom against false alarms only**. Clean runs contain no drift,
+so nothing there says whether the thresholds would catch a real regression, and
+loosening `k` on that basis would trade a visible problem for an invisible one.
+The command says so every time it runs, and refuses to present a
+smallest-that-would-not-have-fired value as a recommendation.
+
+The Mann-Whitney p-value reported alongside is
 distribution-free and does carry its usual meaning, which is exactly why it is
 supporting evidence and never the gate.
 

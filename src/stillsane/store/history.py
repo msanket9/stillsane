@@ -172,6 +172,36 @@ class History:
             ).fetchall()
         return [(r[0], r[1], r[2], r[3], r[4], r[5]) for r in rows]
 
+    def clean_z(self, limit_runs: int = 200) -> list[tuple[str, str, str, float]]:
+        """(probe_id, target, signal, z) for every signal of every clean run.
+
+        Clean runs only, and that restriction is the whole point: a run that passed
+        is a run where nothing drifted, so the `z` values it recorded are what normal
+        looks like. How close those get to `warn_k` is how close the tool came to
+        crying wolf. A run that drifted would contaminate the answer with the very
+        thing being excluded.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT results.probe_id, results.target, results.signal, results.z "
+                "FROM results JOIN runs USING (run_id) "
+                "WHERE runs.level = 'pass' AND results.z IS NOT NULL "
+                "AND results.run_id IN ("
+                "  SELECT run_id FROM runs WHERE level = 'pass' "
+                "  ORDER BY started DESC, rowid DESC LIMIT ?"
+                ")",
+                (limit_runs,),
+            ).fetchall()
+        return [(r[0], r[1], r[2], float(r[3])) for r in rows]
+
+    def clean_run_span(self) -> tuple[int, str | None, str | None]:
+        """(count, earliest, latest) over clean runs, for sizing the evidence."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT count(*), min(finished), max(finished) FROM runs WHERE level = 'pass'"
+            ).fetchone()
+        return (row[0] or 0, row[1], row[2])
+
     def signal_trend(
         self, probe_id: str, target: str, signal: str, limit: int = 30
     ) -> list[tuple[str, float | None, float | None]]:
