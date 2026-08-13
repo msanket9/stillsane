@@ -298,3 +298,79 @@ def test_documented_drift_output_still_matches_the_example():
                 f"{doc.name} documents a stale semantic_distance row.\n"
                 f"Real output now: {line!r}"
             )
+
+
+# --- Changelog -------------------------------------------------------------
+
+CHANGELOG = Path(__file__).resolve().parents[1] / "CHANGELOG.md"
+_RELEASE = re.compile(r"^## (\d+\.\d+\.\d+) - (\d{4}-\d{2}-\d{2})$", re.M)
+
+
+def changelog_releases() -> list[tuple[str, str]]:
+    return _RELEASE.findall(CHANGELOG.read_text(encoding="utf-8"))
+
+
+def test_current_version_has_a_changelog_entry():
+    """The bump and the note describing it belong in the same commit.
+
+    Three releases this project shipped were built from a working tree whose
+    version had already been used by a different build, because the bump was a
+    separate chore that happened after the feature. Requiring an entry gives the
+    bump a reason to happen at the right moment.
+    """
+    from stillsane import __version__
+
+    versions = [v for v, _ in changelog_releases()]
+    assert versions, "CHANGELOG.md has no release sections"
+    assert __version__ in versions, (
+        f"__version__ is {__version__} with no CHANGELOG entry. "
+        f"Newest documented release is {versions[0]}."
+    )
+
+
+def test_changelog_versions_are_unique_and_descending():
+    """Newest first, each version once. A repeated version is the bug this guards."""
+    versions = [v for v, _ in changelog_releases()]
+    assert len(versions) == len(set(versions)), f"duplicate versions: {versions}"
+
+    def key(v: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in v.split("."))
+
+    assert versions == sorted(versions, key=key, reverse=True), (
+        f"CHANGELOG releases are not newest-first: {versions}"
+    )
+
+
+def test_changelog_is_linked_from_the_readme():
+    """A changelog nobody can find does not answer 'what changed?'."""
+    assert "CHANGELOG.md" in DOCS[0].read_text(encoding="utf-8")
+
+
+def test_unreleased_is_not_mistaken_for_a_release():
+    """`## Unreleased` is a heading, not a version.
+
+    The release regex must not pick it up, or the newest-first ordering check would
+    compare a word against version numbers. Worth pinning because the heading is the
+    only thing distinguishing "ahead of the last release" from "level with it".
+    """
+    text = CHANGELOG.read_text(encoding="utf-8")
+    assert "## Unreleased" in text, (
+        "keep the Unreleased heading: it is where landed-but-unshipped work goes, "
+        "and its absence is what made three releases ambiguous"
+    )
+    assert "Unreleased" not in [v for v, _ in changelog_releases()]
+
+
+def test_changelog_ships_in_the_sdist():
+    """A changelog only in git does not help someone who installed from PyPI."""
+    import tomllib
+
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    sdist = data.get("tool", {}).get("hatch", {}).get("build", {}).get("targets", {}).get("sdist")
+    include = (sdist or {}).get("include")
+    if include is None:
+        return  # no explicit allowlist, so hatchling includes the file by default
+    assert any("CHANGELOG" in pattern for pattern in include), (
+        f"sdist include list would drop CHANGELOG.md: {include}"
+    )

@@ -69,7 +69,7 @@ packages = ["src/stillsane"]
 [tool.hatch.build.targets.sdist]
 # Ship the tests: they are the argument that the variance model works, and a
 # source distribution nobody can verify is worth less than one they can.
-include = ["src/", "tests/", "README.md", "LICENSE", "pyproject.toml"]
+include = ["src/", "tests/", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

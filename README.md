@@ -689,6 +689,8 @@ Two things it relies on:
 
 ## Status
 
+Release notes are in [CHANGELOG.md](CHANGELOG.md).
+
 Working end to end:
 
 - The comparison engine: variance bands, effect sizes, verdict aggregation
