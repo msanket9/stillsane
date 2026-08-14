@@ -337,6 +337,33 @@ def test_alert_payload_is_structured(env):
     json.dumps(payload)  # must be serialisable
 
 
+def test_alert_payload_carries_retries(env):
+    """The field the text report and `status` already show, now in the JSON too.
+
+    `stillsane check --json` is what a CI pipeline actually parses. A run that only
+    passed because a transport failure was retried is still evidence the
+    environment is unwell, and that was invisible to anything reading `--json`
+    even though a human running the same check would see it on screen.
+    """
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    result = run_check(config, store, history, STABLE)
+    result.probes[0].retries = 2
+
+    payload = payload_for(result)
+    assert payload["probes"][0]["retries"] == 2
+    json.dumps(payload)
+
+
+def test_alert_payload_retries_defaults_to_zero(env):
+    """A clean run with no retries should not need special-casing to read `0`."""
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    result = run_check(config, store, history, STABLE)
+
+    assert payload_for(result)["probes"][0]["retries"] == 0
+
+
 def test_slack_payload_is_bounded(env):
     config, store, history = env
     run_baseline(config, store, STABLE)

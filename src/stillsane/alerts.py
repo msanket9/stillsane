@@ -33,6 +33,12 @@ def payload_for(result: RunResult) -> dict:
                 "probe": p.probe_id,
                 "target": p.target_name,
                 "level": p.level.value,
+                # A run that only passed because a dropped connection was retried is
+                # still a run against an unwell environment. The text report and
+                # `status` already say so; the JSON payload -- the one a CI pipeline
+                # actually parses -- did not, which made it invisible to exactly the
+                # consumer retries were meant to keep informed.
+                "retries": p.retries,
                 "moved": [
                     {
                         "signal": sv.signal,
