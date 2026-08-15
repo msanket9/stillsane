@@ -362,15 +362,23 @@ def test_unreleased_is_not_mistaken_for_a_release():
 
 
 def test_changelog_ships_in_the_sdist():
-    """A changelog only in git does not help someone who installed from PyPI."""
-    import tomllib
+    """A changelog only in git does not help someone who installed from PyPI.
 
+    Reads `pyproject.toml` as text rather than with `tomllib`, which is stdlib only
+    from 3.11 -- this project supports 3.10, and pulling in `tomli` just for one
+    test would be a dependency for a tool whose whole pitch is having almost none.
+    A full parse is more than this needs: the question is only whether the sdist's
+    explicit include list, if there is one, would drop the file.
+    """
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
-    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    sdist = data.get("tool", {}).get("hatch", {}).get("build", {}).get("targets", {}).get("sdist")
-    include = (sdist or {}).get("include")
-    if include is None:
+    text = pyproject.read_text(encoding="utf-8")
+
+    match = re.search(r"\[tool\.hatch\.build\.targets\.sdist\](.*?)(?:\n\[|\Z)", text, re.S)
+    if not match or "include" not in match.group(1):
         return  # no explicit allowlist, so hatchling includes the file by default
-    assert any("CHANGELOG" in pattern for pattern in include), (
-        f"sdist include list would drop CHANGELOG.md: {include}"
+
+    include_line = re.search(r"include\s*=\s*(\[[^\]]*\])", match.group(1))
+    assert include_line, f"could not find an `include = [...]` list in:\n{match.group(1)}"
+    assert "CHANGELOG" in include_line.group(1), (
+        f"sdist include list would drop CHANGELOG.md: {include_line.group(1)}"
     )
