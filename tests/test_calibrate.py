@@ -16,8 +16,13 @@ from stillsane.calibrate import THIN_EVIDENCE_RUNS, as_json, assess, payload, re
 
 
 def rows(*specs):
-    """(signal, z) pairs into the shape History returns."""
+    """(signal, z) pairs into the shape History returns, all on one probe."""
     return [("probe", "target", signal, z) for signal, z in specs]
+
+
+def multi_rows(*specs):
+    """(probe, signal, z) triples, for tests that need more than one probe."""
+    return [(probe, "target", signal, z) for probe, signal, z in specs]
 
 
 def flat(text: str) -> str:
@@ -80,6 +85,110 @@ def test_signals_are_ordered_worst_first():
     """The one closest to firing is the one worth reading."""
     cal = build([("a", 0.2), ("b", 2.1), ("c", 1.0)])
     assert [s.signal for s in cal.signals] == ["b", "c", "a"]
+
+
+# --- Per probe, not per bare signal name ------------------------------------
+
+
+def test_two_probes_sharing_a_signal_name_are_not_merged():
+    """The bug this module shipped with: found by reading real calibration data.
+
+    `extract_invoice` and `summarise_incident` both report `length_chars`, and in
+    a real run `extract_invoice`'s sat at z=0.000 across 13 clean runs while
+    `summarise_incident`'s reached 1.51. Aggregating by bare signal name pooled
+    them into one row and diluted the one that actually mattered -- the report
+    said "length_chars: headroom 2.0x" with no way to tell which probe that
+    applied to, and pulled the p95 toward zero using a probe that never moved.
+    """
+    cal = assess(
+        multi_rows(
+            ("extract_invoice", "length_chars", 0.0),
+            ("extract_invoice", "length_chars", 0.0),
+            ("summarise_incident", "length_chars", 1.51),
+            ("summarise_incident", "length_chars", 0.2),
+        ),
+        clean_runs=20, warn_k=3.0, drift_k=6.0,
+    )
+    rows_by_probe = {(s.probe_id, s.signal): s for s in cal.signals}
+    assert rows_by_probe[("extract_invoice", "length_chars")].z_max_abs == 0.0
+    assert rows_by_probe[("summarise_incident", "length_chars")].z_max_abs == pytest.approx(1.51)
+    # Two distinct rows, not one merged row averaging the two probes together.
+    assert len(cal.signals) == 2
+
+
+def test_worst_signal_names_its_own_probe():
+    """The summary line must say which probe to look at, not just which signal."""
+    cal = assess(
+        multi_rows(
+            ("quiet_probe", "length_chars", 0.1),
+            ("noisy_probe", "length_chars", 2.0),
+        ),
+        clean_runs=20, warn_k=3.0, drift_k=6.0,
+    )
+    assert cal.worst.probe_id == "noisy_probe"
+    text = flat(render(cal))
+    assert "noisy_probe @ target" in text
+
+
+def test_by_probe_groups_and_orders_correctly():
+    cal = assess(
+        multi_rows(
+            ("a", "s1", 0.5), ("a", "s2", 2.5),
+            ("b", "s1", 0.1),
+        ),
+        clean_runs=20, warn_k=3.0, drift_k=6.0,
+    )
+    groups = cal.by_probe()
+    labels = [label for label, _ in groups]
+    # Probe "a" has the worse signal, so it sorts first.
+    assert labels[0] == "a @ target"
+    a_rows = dict(groups)["a @ target"]
+    # Within a probe, worst signal first.
+    assert [s.signal for s in a_rows] == ["s2", "s1"]
+
+
+def test_render_shows_each_probe_as_its_own_section():
+    cal = assess(
+        multi_rows(("p1", "length_chars", 0.5), ("p2", "length_chars", 0.3)),
+        clean_runs=20, warn_k=3.0, drift_k=6.0,
+    )
+    text = render(cal)
+    assert "p1 @ target" in text
+    assert "p2 @ target" in text
+    # Both probes get their own table row for length_chars, not one shared row.
+    # (A third mention is legitimate: the closing summary names the worst signal.)
+    assert text.count("length_chars") >= 2
+
+
+def test_false_alarms_are_scoped_to_the_probe_that_fired():
+    """A false alarm on one probe must not implicate a quiet one sharing the name."""
+    cal = assess(
+        multi_rows(("flaky", "latency_ms", 4.5), ("steady", "latency_ms", 0.3)),
+        clean_runs=20, warn_k=3.0, drift_k=6.0,
+    )
+    assert [(s.probe_id, s.signal) for s in cal.false_alarms] == [("flaky", "latency_ms")]
+    text = flat(render(cal))
+    assert "latency_ms on flaky @ target" in text
+
+
+def test_payload_carries_probe_and_target_per_row():
+    """A JSON consumer needs to know which probe a row belongs to, same as a reader."""
+    cal = assess(
+        multi_rows(("p1", "length_chars", 1.2)),
+        clean_runs=20, warn_k=3.0, drift_k=6.0,
+    )
+    row = payload(cal)["signals"][0]
+    assert row["probe"] == "p1"
+    assert row["target"] == "target"
+
+
+def test_payload_false_alarms_are_structured_not_bare_names():
+    cal = assess(
+        multi_rows(("flaky", "latency_ms", 4.5)),
+        clean_runs=20, warn_k=3.0, drift_k=6.0,
+    )
+    alarm = payload(cal)["false_alarms"][0]
+    assert alarm == {"probe": "flaky", "target": "target", "signal": "latency_ms"}
 
 
 # --- The caveats, which are load-bearing -----------------------------------

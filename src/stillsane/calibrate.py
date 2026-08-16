@@ -35,12 +35,27 @@ THIN_EVIDENCE_RUNS = 10
 
 @dataclass(frozen=True)
 class SignalCalibration:
-    """One signal's worst behaviour across clean runs."""
+    """One signal's worst behaviour across clean runs, for one probe.
 
+    Scoped to a single probe deliberately. Two probes can share a signal name --
+    "length_chars" says nothing about which probe it came from -- and their
+    variance is not comparable: that is the entire premise the per-probe band
+    exists to encode. A version of this that pooled "length_chars" across every
+    probe once reported 2.0x headroom for a name that was, in the real data behind
+    it, one probe sitting dead at z=0 the whole time and diluting another probe
+    that was genuinely closer to firing. Aggregating hid the probe that mattered.
+    """
+
+    probe_id: str
+    target: str
     signal: str
     n: int
     z_max_abs: float
     z_p95_abs: float
+
+    @property
+    def label(self) -> str:
+        return f"{self.probe_id} @ {self.target}"
 
     def headroom(self, warn_k: float) -> float | None:
         """How many times further the worst clean run would have had to go to fire.
@@ -57,6 +72,8 @@ class SignalCalibration:
 
 @dataclass(frozen=True)
 class Calibration:
+    #: Worst-first overall, but each row still belongs to exactly one probe. Never
+    #: collapse two probes' rows into one just because the signal name matches.
     signals: list[SignalCalibration]
     clean_runs: int
     warn_k: float
@@ -88,6 +105,21 @@ class Calibration:
         w = self.worst
         return None if w is None or w.z_max_abs <= 0 else w.z_max_abs
 
+    def by_probe(self) -> list[tuple[str, list[SignalCalibration]]]:
+        """Rows grouped by probe, each group worst-first, groups worst-first.
+
+        The grouping a reader actually wants: which probe should I look at first,
+        and within it, which signal.
+        """
+        groups: dict[str, list[SignalCalibration]] = {}
+        for s in self.signals:
+            groups.setdefault(s.label, []).append(s)
+        ordered = sorted(
+            groups.items(), key=lambda kv: max(s.z_max_abs for s in kv[1]), reverse=True
+        )
+        return [(label, sorted(rows, key=lambda s: s.z_max_abs, reverse=True))
+                for label, rows in ordered]
+
 
 def assess(
     rows: Sequence[tuple[str, str, str, float]],
@@ -98,24 +130,26 @@ def assess(
     first: str | None = None,
     last: str | None = None,
 ) -> Calibration:
-    """Summarise `z` on clean runs, per signal.
+    """Summarise `z` on clean runs, per probe, per signal.
 
     Takes rows rather than a `History` for the same reason `compare/` takes samples
     rather than a target: the arithmetic is the part worth testing, and it should
     not need a database on disk to exercise.
     """
-    by_signal: dict[str, list[float]] = {}
+    by_key: dict[tuple[str, str, str], list[float]] = {}
     probes: set[str] = set()
     for probe_id, target, signal, z in rows:
-        by_signal.setdefault(signal, []).append(abs(z))
+        by_key.setdefault((probe_id, target, signal), []).append(abs(z))
         probes.add(f"{probe_id} @ {target}")
 
     signals = []
-    for name, values in sorted(by_signal.items()):
+    for (probe_id, target, signal), values in sorted(by_key.items()):
         arr = np.asarray(values, dtype=float)
         signals.append(
             SignalCalibration(
-                signal=name,
+                probe_id=probe_id,
+                target=target,
+                signal=signal,
                 n=len(arr),
                 z_max_abs=float(arr.max()),
                 z_p95_abs=float(np.percentile(arr, 95)),
@@ -151,18 +185,21 @@ def render(cal: Calibration) -> str:
         + (f", {cal.first[:10]} to {cal.last[:10]}" if cal.first and cal.last else ""),
         f"{len(cal.probes)} probe(s): {', '.join(cal.probes)}",
         "",
-        f"  {'signal':<26}{'n':>5}{'|z| p95':>10}{'|z| max':>10}{'headroom':>14}",
     ]
-    for s in cal.signals:
-        head = s.headroom(cal.warn_k)
-        head_s = "never moved" if head is None else f"{head:.1f}x"
-        lines.append(
-            f"  {s.signal:<26}{s.n:>5}{s.z_p95_abs:>10.2f}{s.z_max_abs:>10.2f}{head_s:>14}"
-        )
-    lines.append("")
+
+    for label, rows in cal.by_probe():
+        lines.append(f"{label}")
+        lines.append(f"  {'signal':<24}{'n':>5}{'|z| p95':>10}{'|z| max':>10}{'headroom':>14}")
+        for s in rows:
+            head = s.headroom(cal.warn_k)
+            head_s = "never moved" if head is None else f"{head:.1f}x"
+            lines.append(
+                f"  {s.signal:<24}{s.n:>5}{s.z_p95_abs:>10.2f}{s.z_max_abs:>10.2f}{head_s:>14}"
+            )
+        lines.append("")
 
     if cal.false_alarms:
-        names = ", ".join(s.signal for s in cal.false_alarms)
+        names = ", ".join(f"{s.signal} on {s.label}" for s in cal.false_alarms)
         lines += _wrap(
             f"warn_k={cal.warn_k:g} already fires on clean runs: {names} exceeded it "
             "while nothing had drifted. These are false alarms being recorded as "
@@ -183,9 +220,9 @@ def render(cal: Calibration) -> str:
         worst = cal.worst
         lines += _wrap(
             f"No clean run came closer than {cal.warn_k / worst.z_max_abs:.1f}x to the "
-            f"warn threshold. The worst was {worst.signal} at |z|={worst.z_max_abs:.2f} "
-            f"against warn_k={cal.warn_k:g}, so on this evidence the threshold is "
-            "conservative rather than trigger-happy."
+            f"warn threshold. The worst was {worst.signal} on {worst.label} at "
+            f"|z|={worst.z_max_abs:.2f} against warn_k={cal.warn_k:g}, so on this "
+            "evidence the threshold is conservative rather than trigger-happy."
         )
 
     if cal.tightest_k:
@@ -224,11 +261,16 @@ def payload(cal: Calibration) -> dict:
         "warn_k": cal.warn_k,
         "drift_k": cal.drift_k,
         "tightest_warn_k": cal.tightest_k,
-        "false_alarms": [s.signal for s in cal.false_alarms],
+        "false_alarms": [
+            {"probe": s.probe_id, "target": s.target, "signal": s.signal}
+            for s in cal.false_alarms
+        ],
         "first": cal.first,
         "last": cal.last,
         "signals": [
             {
+                "probe": s.probe_id,
+                "target": s.target,
                 "signal": s.signal,
                 "n": s.n,
                 "z_p95_abs": round(s.z_p95_abs, 4),

@@ -17,6 +17,17 @@ ambiguity that produced those three.
 
 - This changelog, and tests requiring the current version to have an entry, the
   entries to be unique and newest-first, and the file to be linked from the README.
+- `stillsane check --json` (and the webhook/Slack payloads) now carry `retries`
+  per probe. The text report and `status` already showed a recovered transport
+  failure; the JSON payload, the one a CI pipeline actually parses, silently did
+  not.
+- Fixed `stillsane calibrate` pooling `z` values across probes that happen to
+  share a signal name. `extract_invoice` and `summarise_incident` both report
+  `length_chars`; in real data the first sat at z=0.000 across thirteen clean
+  runs while the second reached 1.51, and the pooled report showed one row
+  averaging them together with no way to tell which probe it meant. Output is
+  now grouped per probe, and the JSON payload carries `probe`/`target` on every
+  row and every false-alarm entry.
 
 ## 0.0.9 - 2026-08-12
 

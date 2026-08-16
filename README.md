@@ -229,17 +229,37 @@ reads the `z` values your clean runs already recorded and reports how close each
 signal came to firing:
 
 ```
-  signal                        n   |z| p95   |z| max      headroom
-  length_chars                 26      1.08      1.51          2.0x
-  latency_ms                   26      0.67      0.83          3.6x
-  semantic_distance            26      0.51      0.68          4.4x
+summarise_incident @ claude
+  signal                      n   |z| p95   |z| max      headroom
+  length_chars               13      1.32      1.51          2.0x
+  latency_ms                 13      0.77      0.83          3.6x
+  semantic_distance          13      0.42      0.68          4.4x
+
+essay_maintainability @ claude
+  signal                      n   |z| p95   |z| max      headroom
+  length_chars               12      0.95      1.19          2.5x
+  semantic_distance          12      0.50      0.59          5.1x
+  latency_ms                 12      0.25      0.26         11.4x
+
+extract_invoice @ claude
+  signal                      n   |z| p95   |z| max      headroom
+  latency_ms                 13      0.11      0.28         10.8x
+  length_chars               13      0.00      0.00   never moved
+  semantic_distance          13      0.00      0.00   never moved
 ```
 
 A clean run is one where nothing drifted, so its `z` values are what normal looks
-like, and the gap to `warn_k` is the margin before a false alarm. The reading
-above is from nine clean runs against a live provider: nothing came within 2x of
-the threshold, which says `warn_k: 3` is conservative rather than trigger-happy on
-those probes.
+like, and the gap to `warn_k` is the margin before a false alarm. Reported per
+probe rather than pooled by bare signal name: two probes both have a
+`length_chars`, and their variance is not comparable, which is the entire reason
+the band is learned per probe in the first place. Above, `extract_invoice` never
+moved at all across thirteen clean runs while `summarise_incident` reached 1.51 --
+pooling those into one "length_chars" row would have hidden the probe that
+actually mattered behind one that was inert.
+
+The reading above is from real clean runs against a live provider: nothing came
+within 2x of the threshold, which says `warn_k: 3` is conservative rather than
+trigger-happy on those probes.
 
 It measures **headroom against false alarms only**. Clean runs contain no drift,
 so nothing there says whether the thresholds would catch a real regression, and
