@@ -28,6 +28,9 @@ ambiguity that produced those three.
   averaging them together with no way to tell which probe it meant. Output is
   now grouped per probe, and the JSON payload carries `probe`/`target` on every
   row and every false-alarm entry.
+- `stillsane calibrate --probe` scopes the report to one probe, matching `check`
+  and `bands`. Distinguishes a typo'd probe id from a real probe with no clean
+  runs recorded yet, rather than giving both the same error.
 
 ## 0.0.9 - 2026-08-12
 

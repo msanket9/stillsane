@@ -491,6 +491,94 @@ def test_cli_json_output_is_machine_readable(tmp_path, monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["level"] == "pass"
 
 
+#: Two probes, so `calibrate --probe` has something real to filter between. Both
+#: report `length_chars`, deliberately: that shared name is exactly what the
+#: per-probe aggregation fix exists to keep separate.
+TWO_PROBE_CONFIG = {
+    "embedder": "hashing",
+    "targets": [
+        {"name": "prod", "base_url": "https://api.example.com/v1", "model": "some-model"}
+    ],
+    "probes": [
+        {
+            "id": "extract_invoice",
+            "prompt": "Extract the total and due date as JSON.",
+            "baseline_samples": 5,
+            "check_samples": 3,
+            "checks": ["valid_json", {"has_keys": ["total", "due_date"]}],
+        },
+        {
+            "id": "summarise",
+            "prompt": "Summarise this incident in three sentences.",
+            "baseline_samples": 5,
+            "check_samples": 3,
+        },
+    ],
+}
+
+
+def test_cli_calibrate_scopes_to_one_probe(tmp_path, monkeypatch, capsys):
+    """`--probe` on `calibrate` filters rows the same way it does on `check`/`bands`.
+
+    Uses a real two-probe config specifically because both probes report
+    `length_chars`: the wiring being tested is that the CLI passes the filter down
+    correctly, on top of the aggregation fix that keeps same-named signals apart.
+    """
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(TWO_PROBE_CONFIG))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    assert cli.main(["-c", str(config_path), "check"]) == 0
+    capsys.readouterr()
+
+    assert cli.main(["-c", str(config_path), "calibrate", "--probe", "summarise"]) == 0
+    out = capsys.readouterr().out
+    assert "summarise @ prod" in out
+    assert "extract_invoice" not in out
+
+
+def test_cli_calibrate_rejects_an_unknown_probe(tmp_path, monkeypatch, capsys):
+    """A typo must read as a typo, not as "you have no data at all"."""
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(TWO_PROBE_CONFIG))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    cli.main(["-c", str(config_path), "baseline"])
+    cli.main(["-c", str(config_path), "check"])
+    capsys.readouterr()
+
+    code = cli.main(["-c", str(config_path), "calibrate", "--probe", "nope"])
+    assert code == 1
+    assert "No probes matched: nope" in capsys.readouterr().err
+
+
+def test_cli_calibrate_distinguishes_no_clean_runs_from_unknown_probe(
+    tmp_path, monkeypatch, capsys
+):
+    """A probe that exists but has never had a clean run needs a different message
+    than a typo, or the fix looks the same as the problem."""
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(TWO_PROBE_CONFIG))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    # Baseline both, but only ever check one, so "summarise" has zero clean runs
+    # recorded despite being a real probe in the config.
+    cli.main(["-c", str(config_path), "baseline"])
+    cli.main(["-c", str(config_path), "check", "--probe", "extract_invoice"])
+    capsys.readouterr()
+
+    code = cli.main(["-c", str(config_path), "calibrate", "--probe", "summarise"])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "No clean runs recorded yet for: summarise" in err
+    assert "No probes matched" not in err
+
+
 def test_cli_state_lives_next_to_the_config(tmp_path, monkeypatch):
     config_path = tmp_path / "nested" / "stillsane.yaml"
     config_path.parent.mkdir()

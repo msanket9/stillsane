@@ -307,10 +307,31 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     config = _load(args.config)
     _, history = _store(config, args.config)
     cfg = config.thresholds.to_band_config()
+    only = set(args.probe) if args.probe else None
 
+    rows = history.clean_z(limit_runs=args.limit)
+    if only:
+        known = {p.id for p in config.probes}
+        typos = only - known
+        if typos:
+            print(f"No probes matched: {', '.join(sorted(typos))}", file=sys.stderr)
+            return 1
+        rows = [r for r in rows if r[0] in only]
+        if not rows:
+            print(
+                f"No clean runs recorded yet for: {', '.join(sorted(only))}\n"
+                "Run `stillsane check` on a schedule and come back.",
+                file=sys.stderr,
+            )
+            return 1
+
+    # `clean_runs`/`first`/`last` describe every clean run recorded, not just ones
+    # touching the selected probe(s) -- a probe only appears in a run it was part
+    # of, so narrowing this count as well would double-narrow and understate how
+    # much evidence backs the report. It stays global context; the rows are scoped.
     clean_runs, first, last = history.clean_run_span()
     cal = assess_calibration(
-        history.clean_z(limit_runs=args.limit),
+        rows,
         clean_runs=clean_runs,
         warn_k=cfg.warn_k,
         drift_k=cfg.drift_k,
@@ -507,6 +528,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cal = sub.add_parser(
         "calibrate", help="what your clean runs say about warn_k and drift_k"
     )
+    p_cal.add_argument("--probe", action="append", help="limit to this probe id (repeatable)")
     p_cal.add_argument(
         "--limit", type=int, default=200, help="clean runs to consider (default: 200)"
     )

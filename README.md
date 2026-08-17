@@ -267,6 +267,11 @@ loosening `k` on that basis would trade a visible problem for an invisible one.
 The command says so every time it runs, and refuses to present a
 smallest-that-would-not-have-fired value as a recommendation.
 
+`--probe` scopes the report to one probe, the same as `check` and `bands`, which
+is useful once a config has several: a CI step gating on a newly added probe's
+headroom should not have unrelated probes affecting its exit code. `--strict`
+exits 2 if any signal on any considered probe already fires on a clean run.
+
 The Mann-Whitney p-value reported alongside is
 distribution-free and does carry its usual meaning, which is exactly why it is
 supporting evidence and never the gate.
