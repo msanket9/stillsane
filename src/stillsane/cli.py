@@ -408,6 +408,18 @@ def _run_check(args: argparse.Namespace) -> int:
     store, history = _store(config, args.config)
     only = set(args.probe) if args.probe else None
 
+    # A typo'd `--probe` used to filter every probe out silently: `check()` got an
+    # empty plan list, produced a `RunResult` with no probes, and that rendered as
+    # "No probes ran" -- with exit 0. A monitor that no-ops and reports success on
+    # a bad invocation is the one failure mode this whole tool exists to prevent,
+    # and CI would have read that typo as a passing check. `baseline` and `bands`
+    # already catch this; `check` (and `watch`, which shares this) did not.
+    if only:
+        unknown = only - {p.id for p in config.probes}
+        if unknown:
+            print(f"No probes matched: {', '.join(sorted(unknown))}", file=sys.stderr)
+            return EXIT_CODES[Level.ERROR]
+
     result = asyncio.run(check(config, store, history, only=only))
 
     if args.json:

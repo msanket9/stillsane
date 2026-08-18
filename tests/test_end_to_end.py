@@ -478,6 +478,27 @@ def test_cli_check_returns_the_drift_exit_code(tmp_path, monkeypatch, capsys):
     assert "DRIFT" in capsys.readouterr().out
 
 
+def test_cli_check_rejects_an_unknown_probe(tmp_path, monkeypatch, capsys):
+    """A typo'd `--probe` must not silently no-op and report success.
+
+    Before this, an empty `only` match produced a `RunResult` with no probes,
+    which rendered as "No probes ran" at exit 0 -- a config that genuinely does
+    define a probe, reporting PASS on an invocation that checked nothing. A CI
+    step gating on this exit code would have read the typo as a clean run.
+    """
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(CONFIG))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    cli.main(["-c", str(config_path), "baseline"])
+    capsys.readouterr()
+
+    code = cli.main(["-c", str(config_path), "check", "--probe", "nope"])
+    assert code == 3  # ERROR, not the exit 0 this used to silently return
+    assert "No probes matched: nope" in capsys.readouterr().err
+
+
 def test_cli_json_output_is_machine_readable(tmp_path, monkeypatch, capsys):
     config_path = tmp_path / "stillsane.yaml"
     config_path.write_text(yaml.safe_dump(CONFIG))

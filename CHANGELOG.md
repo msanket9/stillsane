@@ -31,6 +31,11 @@ ambiguity that produced those three.
 - `stillsane calibrate --probe` scopes the report to one probe, matching `check`
   and `bands`. Distinguishes a typo'd probe id from a real probe with no clean
   runs recorded yet, rather than giving both the same error.
+- Fixed `stillsane check --probe <typo>` (and `watch`, which shares the same
+  path) silently matching nothing and exiting 0 with "No probes ran" -- a
+  passing exit code for an invocation that checked nothing, on a config that
+  genuinely defines the probe you meant to type. `baseline` and `bands` already
+  caught this; `check` did not. Now exits 3 (ERROR) and names the unmatched id.
 
 ## 0.0.9 - 2026-08-12
 
