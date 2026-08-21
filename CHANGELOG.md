@@ -15,6 +15,8 @@ ambiguity that produced those three.
 
 ## Unreleased
 
+## 0.0.10 - 2026-08-21
+
 - This changelog, and tests requiring the current version to have an entry, the
   entries to be unique and newest-first, and the file to be linked from the README.
 - `stillsane check --json` (and the webhook/Slack payloads) now carry `retries`
