@@ -15,6 +15,22 @@ ambiguity that produced those three.
 
 ## Unreleased
 
+- New always-on signal, `response_complete`: did the response finish on its own,
+  or get cut off by the token limit. Reads `finish_reason` (OpenAI-shaped
+  targets) or `stop_reason` (Anthropic, and any `http` target that exposes it),
+  and flags the token-limit case specifically rather than any change in
+  vocabulary. Found by hand in a real calibration run -- an essay probe
+  truncated on 7 of 8 samples for weeks with nothing in the tool saying so,
+  because a truncated response can still be longer than the baseline and stay
+  close to it semantically right up to where it stops. `strict_when_perfect`,
+  same as `valid_json`: if the baseline never truncated, any truncation on a
+  check is drift, not a statistical question.
+
+  Existing baselines captured before this shipped have no `finish_reason` on
+  their stored samples, so the signal correctly stays silent on them rather than
+  guessing -- recapture (`stillsane baseline`) to start watching for truncation
+  on a probe that already has a baseline.
+
 ## 0.0.10 - 2026-08-21
 
 - This changelog, and tests requiring the current version to have an entry, the

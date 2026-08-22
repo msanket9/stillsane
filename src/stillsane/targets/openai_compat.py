@@ -26,6 +26,27 @@ def read_fingerprint(body: Any) -> str | None:
     return None
 
 
+#: `finish_reason` for OpenAI-shaped bodies; Anthropic's Messages API calls the
+#: same idea `stop_reason`, at the top level rather than nested under a choice.
+#: Both checked so a plain `http` target pointed at either still gets truncation
+#: watched, without the raw target needing to know which provider it is.
+FINISH_REASON_FIELDS = ("finish_reason", "stop_reason")
+
+
+def read_finish_reason(body: Any) -> str | None:
+    if not isinstance(body, dict):
+        return None
+    for field in FINISH_REASON_FIELDS:
+        if body.get(field):
+            return str(body[field])
+    choices = body.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        for field in FINISH_REASON_FIELDS:
+            if choices[0].get(field):
+                return str(choices[0][field])
+    return None
+
+
 class OpenAICompatTarget(Target):
     def build_request(self, probe: ProbeConfig) -> tuple[str, str, dict[str, str], dict[str, Any]]:
         messages = []
@@ -48,11 +69,13 @@ class OpenAICompatTarget(Target):
 
         choices = body.get("choices") or []
         message = (choices[0].get("message") or {}) if choices else {}
+        finish = read_finish_reason(body)
 
         out: dict[str, Any] = {
             "text": message.get("content") or "",
             "model_id": body.get("model"),
             "tool_calls": [ToolCall.from_openai(tc) for tc in (message.get("tool_calls") or [])],
+            "finish_reason": finish,
         }
 
         fingerprint = read_fingerprint(body)
@@ -72,6 +95,5 @@ class OpenAICompatTarget(Target):
         # A tool-only reply has no content, and that is not an error -- for an agent
         # probe it is the normal case. Only flag genuinely empty responses.
         if not out["text"] and not out["tool_calls"]:
-            finish = (choices[0].get("finish_reason") if choices else None) or "no choices"
-            out["error"] = f"empty response (finish_reason: {finish})"
+            out["error"] = f"empty response (finish_reason: {finish or 'no choices'})"
         return out

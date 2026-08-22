@@ -13,7 +13,7 @@ from typing import Any
 
 from ..config import ProbeConfig
 from .base import Target, dotted_get, render_template
-from .openai_compat import read_fingerprint
+from .openai_compat import read_fingerprint, read_finish_reason
 
 
 class HTTPTarget(Target):
@@ -45,6 +45,9 @@ class HTTPTarget(Target):
         fingerprint = read_fingerprint(body)
         if fingerprint:
             out["fingerprint"] = fingerprint
+        finish = read_finish_reason(body)
+        if finish:
+            out["finish_reason"] = finish
         if isinstance(body, dict) and body.get("model"):
             out["model_id"] = str(body["model"])
         return out

@@ -604,8 +604,18 @@ beyond the probe calls themselves.
 
 Several signals are always on and need no configuration: semantic distance, JSON
 shape, tool-call shape, length, completion tokens, cost, latency, provider
-fingerprint and model id. Signals that do not apply to a probe stay silent, so
-tool-call drift says nothing about a probe that never calls a tool.
+fingerprint, model id, and whether the response finished on its own rather than
+getting cut off by the token limit. Signals that do not apply to a probe stay
+silent, so tool-call drift says nothing about a probe that never calls a tool.
+
+The truncation one exists because of a real miss: an essay probe run for weeks
+against a live provider truncated on 7 of 8 samples (`stop_reason=max_tokens`) and
+nothing in the tool said so. Length and semantic distance alone do not reliably
+catch this, because a truncated response can still be longer than the baseline and
+stay close to it right up to where it stops -- everything up to the cutoff is
+genuine content. Reads `finish_reason` (OpenAI-shaped targets) or `stop_reason`
+(Anthropic, checked generically so a raw `http` target gets it too), and is silent
+rather than guessing on a provider that exposes neither.
 
 ### Generating probes from logs
 
@@ -720,7 +730,7 @@ Working end to end:
 
 - The comparison engine: variance bands, effect sizes, verdict aggregation
 - Signals: structural, semantic, JSON shape, tool-call shape, fingerprint,
-  tokens, cost, latency
+  tokens, cost, latency, response truncation
 - Variance pooling, with the caps that stop gradual drift widening its own band
 - Targets: OpenAI-compatible and arbitrary HTTP
 - Versioned baseline store, SQLite history, and the config hash that refuses a

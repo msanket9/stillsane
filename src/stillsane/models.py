@@ -111,6 +111,10 @@ class Sample:
     cost_usd: float | None = None
     latency_ms: float | None = None
     http_status: int | None = None
+    #: Raw `finish_reason`/`stop_reason` as the provider names it, e.g. "stop",
+    #: "length", "max_tokens", "tool_calls". Kept as-is rather than normalised, so a
+    #: signal built later can interpret vocabulary this project has not seen yet.
+    finish_reason: str | None = None
     error: str | None = None
     #: How many times the endpoint was called to produce this sample. Above one
     #: means a transient transport failure was retried. Recorded rather than

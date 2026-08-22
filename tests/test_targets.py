@@ -224,6 +224,24 @@ def test_alternative_fingerprint_field_names_are_read():
     assert sample.fingerprint == "build-99"
 
 
+# --- Truncation, read off finish_reason / stop_reason ----------------------
+
+
+def test_finish_reason_is_captured_on_a_complete_response():
+    """`oai_body()`'s default is "stop", the ordinary case, captured like any
+    other field rather than only surfacing when something goes wrong."""
+    sample = call(build_target(OAI), PROBE, lambda r: httpx.Response(200, json=oai_body()))
+    assert sample.finish_reason == "stop"
+
+
+def test_finish_reason_is_captured_on_a_truncated_response():
+    body = oai_body()
+    body["choices"][0]["finish_reason"] = "length"
+    sample = call(build_target(OAI), PROBE, lambda r: httpx.Response(200, json=body))
+    assert sample.finish_reason == "length"
+    assert sample.ok  # truncation is not a transport error; the tool must say so
+
+
 # --- Failure handling -----------------------------------------------------
 
 
@@ -403,6 +421,47 @@ def test_http_target_without_a_path_compares_the_whole_body():
     )
     sample = call(target, PROBE, lambda r: httpx.Response(200, json={"b": 2, "a": 1}))
     assert sample.text == '{"a": 1, "b": 2}'  # sorted, so key order is not drift
+
+
+def test_http_target_reads_anthropics_top_level_stop_reason():
+    """Anthropic's Messages API puts `stop_reason` at the top level, not nested
+    under a `choices[0]` the way OpenAI does. A raw `http` target pointed at it
+    has no schema knowledge of its own, so this has to be checked generically
+    rather than assumed."""
+    target = build_target(
+        TargetConfig(
+            name="claude", type="http", base_url="https://api.anthropic.com",
+            path="/v1/messages", body={"messages": []},
+            response_path="content[type=text].text",
+        )
+    )
+    body = {
+        "content": [{"type": "text", "text": "Sure! Here is"}],
+        "stop_reason": "max_tokens",
+    }
+    sample = call(target, PROBE, lambda r: httpx.Response(200, json=body))
+    assert sample.finish_reason == "max_tokens"
+
+
+def test_http_target_reads_openai_shaped_finish_reason_too():
+    """A custom app that happens to proxy an OpenAI-shaped body through `type:
+    http` should not lose truncation detection just because it is not the
+    dedicated `openai_compatible` target."""
+    target = build_target(APP)
+    body = {
+        "data": {"reply": "cut off"},
+        "choices": [{"finish_reason": "length"}],
+    }
+    sample = call(target, PROBE, lambda r: httpx.Response(200, json=body))
+    assert sample.finish_reason == "length"
+
+
+def test_http_target_finish_reason_is_none_when_absent():
+    """A custom app with no such concept at all must not have one invented."""
+    sample = call(
+        build_target(APP), PROBE, lambda r: httpx.Response(200, json={"data": {"reply": "hi"}})
+    )
+    assert sample.finish_reason is None
 
 
 # --- Helpers --------------------------------------------------------------

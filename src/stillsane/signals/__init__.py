@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from .base import CategoricalSignal, PairwiseSignal, PointwiseSignal, Signal
-from .meta import CompletionTokens, CostUsd, Fingerprint, LatencyMs, ModelId
+from .meta import CompletionTokens, CostUsd, Fingerprint, LatencyMs, ModelId, ResponseComplete
 from .semantic import (
     Embedder,
     HashingEmbedder,
@@ -49,6 +49,7 @@ ALWAYS_ON = (
     "latency_ms",
     "fingerprint",
     "model_id",
+    "response_complete",
 )
 
 
@@ -83,6 +84,7 @@ def build_signals(checks: list[Any] | None, embedder: Embedder) -> list[Signal]:
         LatencyMs(),
         Fingerprint(),
         ModelId(),
+        ResponseComplete(),
     ]
 
     for check in checks or []:

@@ -7,6 +7,7 @@ from conftest import sample
 
 from stillsane.models import Sample, ToolCall
 from stillsane.signals import build_signals
+from stillsane.signals.meta import ResponseComplete
 from stillsane.signals.shape import JsonShapeDistance, ToolCallDistance, jaccard_distance, key_paths
 from stillsane.signals.structural import (
     HasKeys,
@@ -63,6 +64,48 @@ def test_signals_skip_errored_samples():
     assert ValidJson().value(errored) is None
     assert LengthChars().value(errored) is None
     assert HasKeys(["a"]).value(errored) is None
+
+
+# --- Truncation -------------------------------------------------------------
+
+
+def test_response_complete_flags_known_truncation_reasons():
+    """OpenAI's "length" and Anthropic's "max_tokens" are the two this project has
+    concrete evidence for -- found by hand, in the essay probe of a real
+    calibration run, before this signal existed to catch it automatically."""
+    assert ResponseComplete().value(sample("...", finish_reason="length")) == 0.0
+    assert ResponseComplete().value(sample("...", finish_reason="max_tokens")) == 0.0
+
+
+def test_response_complete_accepts_ordinary_finish_reasons():
+    """Every other way a response legitimately ends. None of these are truncation,
+    and flagging them would fire on ordinary agent behaviour."""
+    for reason in ("stop", "end_turn", "tool_calls", "tool_use", "stop_sequence"):
+        assert ResponseComplete().value(sample("done", finish_reason=reason)) == 1.0
+
+
+def test_response_complete_is_silent_when_the_provider_does_not_expose_it():
+    """No finish_reason at all -- an http target with no matching field, or a
+    provider this project has not added detection for -- must not be guessed at.
+    Silent, the same as fingerprint watching on a provider with no fingerprint."""
+    assert ResponseComplete().value(sample("done", finish_reason=None)) is None
+
+
+def test_response_complete_skips_errored_samples():
+    assert ResponseComplete().value(sample("", error="timeout", finish_reason="length")) is None
+
+
+def test_response_complete_catches_a_regression_a_length_check_would_miss():
+    """The reason this signal exists rather than trusting length_chars: a
+    truncated response can still be *longer* than the baseline, and embed close
+    to it right up to the point it stops, because everything up to the cutoff is
+    genuine, on-topic content. Length and semantic distance alone would not
+    reliably flag this; only the finish reason says the answer is incomplete.
+    """
+    baseline = sample("A" * 500, finish_reason="stop")
+    current = sample("A" * 600, finish_reason="length")  # longer, and truncated
+    assert ResponseComplete().value(baseline) == 1.0
+    assert ResponseComplete().value(current) == 0.0
 
 
 # --- Shape ----------------------------------------------------------------

@@ -71,6 +71,42 @@ class CostUsd(PointwiseSignal):
         return f"${value:.6f}"
 
 
+class ResponseComplete(PointwiseSignal):
+    """Did the response finish on its own, or get cut off by the token limit?
+
+    Narrowly about truncation, not about `finish_reason` churn in general --
+    "stop" vs "tool_calls" vs "end_turn" are all legitimate ways for a response to
+    end, and flagging every change between them would fire on ordinary agent
+    behaviour. Only the token-limit case is a content problem: part of the answer
+    is missing, and neither `length_chars` nor `semantic_distance` reliably catch
+    that, because a truncated response can still be longer than the baseline and
+    embed close to it right up to where it stops.
+
+    `strict_when_perfect`, matching `valid_json`: if the baseline never truncated,
+    any truncation on a check is drift, not a statistical question -- you cannot
+    learn a variance from a constant, and this is the same reasoning `valid_json`
+    already uses for exactly the same shape of problem.
+    """
+
+    name = "response_complete"
+    direction = Direction.DOWN_IS_BAD
+    strict_when_perfect = True
+
+    #: The only two vocabularies this project has concrete evidence for: OpenAI's
+    #: "length" and Anthropic's "max_tokens". Everything else -- "stop", "end_turn",
+    #: "tool_calls", "tool_use", "content_filter", or a provider not seen yet -- is
+    #: treated as complete rather than guessed at.
+    TRUNCATED = frozenset({"length", "max_tokens"})
+
+    def value(self, sample: Sample) -> float | None:
+        if not sample.ok or sample.finish_reason is None:
+            return None
+        return 0.0 if sample.finish_reason in self.TRUNCATED else 1.0
+
+    def format(self, value: float) -> str:
+        return "complete" if value >= 1.0 else "truncated"
+
+
 class LatencyMs(PointwiseSignal):
     """Round-trip latency.
 

@@ -188,6 +188,32 @@ def test_identical_baseline_still_catches_content_change(signals_for):
     assert verdict.level is Level.DRIFT
 
 
+def test_a_baseline_that_never_truncates_catches_one_that_does(signals_for):
+    """`response_complete`, the same shape of proof as the one above for
+    `valid_json`: this is not a statistical question, so a baseline of five
+    complete responses must not need a variance band to catch the first
+    truncated one.
+
+    Grounded in a real miss: an essay probe run for weeks truncated on 7 of 8
+    samples and nothing in the tool said so, because length and semantic
+    distance alone do not reliably distinguish "a longer, complete answer" from
+    "a longer answer that got cut off partway through."
+    """
+    baseline = [sample("A steady answer that always finishes.", finish_reason="stop")] * 5
+    current = [sample("A steady answer that always fini", finish_reason="length")] * 3
+    verdict = compare_probe(
+        probe_id="essay",
+        target_name="prod",
+        signals=signals_for(),
+        baseline=baseline,
+        current=current,
+        cfg=BandConfig(),
+    )
+    assert verdict.level is Level.DRIFT
+    moved = {s.signal for s in verdict.moved}
+    assert "response_complete" in moved
+
+
 # --- 5. Fingerprint change -----------------------------------------------
 
 

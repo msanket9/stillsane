@@ -25,6 +25,7 @@ def sample(
     cost_usd: float | None = None,
     tool_calls: list[ToolCall] | None = None,
     error: str | None = None,
+    finish_reason: str | None = None,
 ) -> Sample:
     return Sample(
         probe_id=probe,
@@ -37,6 +38,7 @@ def sample(
         cost_usd=cost_usd,
         tool_calls=tool_calls or [],
         error=error,
+        finish_reason=finish_reason,
     )
 
 
