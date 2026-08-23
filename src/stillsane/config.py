@@ -26,8 +26,12 @@ class TargetConfig(BaseModel):
     """A live endpoint to probe. Speaks plain HTTP; nothing is instrumented."""
 
     name: str
-    type: Literal["openai_compatible", "http"] = "openai_compatible"
-    base_url: str
+    type: Literal["openai_compatible", "http", "claude_code"] = "openai_compatible"
+    #: Required for `openai_compatible`/`http`. Meaningless for `claude_code`,
+    #: which has no URL at all -- it shells out to the `claude` CLI already
+    #: installed and authenticated on this machine, so a probe draws on whatever
+    #: plan that login already covers instead of a separately billed API key.
+    base_url: str = ""
     model: str | None = None
     #: Name of the environment variable holding the key. Never the key itself --
     #: this file is meant to live in git.
@@ -74,12 +78,30 @@ class TargetConfig(BaseModel):
     #: Dotted path to the text in the response, e.g. `choices.0.message.content`.
     response_path: str | None = None
 
+    # --- `type: claude_code` only ---
+    #: The binary to invoke. Overridable so a test suite can point this at a fake
+    #: script instead of spending real usage on every run, and so a real install
+    #: under a non-standard name or path still works.
+    claude_command: str = "claude"
+    #: Explicit, opt-in tool allowlist for a probe. `None` (the default) is the
+    #: deny-everything mode: no tools, no MCP servers, the shape verified against a
+    #: real install before this shipped. Naming tools here -- e.g. `[Read, Glob,
+    #: Grep]` for read-only access to a dataset -- switches that probe to agentic
+    #: mode instead, for testing something that is genuinely supposed to use
+    #: tools. Deliberately an allowlist rather than an "agentic: true" switch: an
+    #: unattended daily cron job silently granted broad tool access is a different
+    #: and much larger risk than one that can only do exactly what it was told it
+    #: may do. This mode has had far less real-world testing than the default.
+    allowed_tools: list[str] | None = None
+
     @model_validator(mode="after")
     def _check_shape(self) -> TargetConfig:
         if self.type == "openai_compatible" and not self.model:
             raise ValueError(f"target {self.name!r}: `model` is required for openai_compatible")
         if self.type == "http" and self.body is None:
             raise ValueError(f"target {self.name!r}: `body` is required for type: http")
+        if self.type in ("openai_compatible", "http") and not self.base_url:
+            raise ValueError(f"target {self.name!r}: `base_url` is required for type: {self.type}")
         return self
 
     def api_key(self) -> str | None:
@@ -94,8 +116,17 @@ class TargetConfig(BaseModel):
         return key
 
     def identity(self) -> dict[str, Any]:
-        """The parts of a target that change what the output looks like."""
-        return {
+        """The parts of a target that change what the output looks like.
+
+        `claude_command`/`allowed_tools` are added to the dict only for
+        `claude_code`, never present for the other types. Adding any new key here
+        unconditionally changes every existing target's hash the moment someone
+        upgrades, regardless of the key's value, and invalidates every baseline
+        in existence overnight -- caught by the bundled example's own committed
+        baseline refusing to compare after these two fields were added
+        unconditionally in testing.
+        """
+        out: dict[str, Any] = {
             "type": self.type,
             "base_url": self.base_url,
             "model": self.model,
@@ -104,6 +135,10 @@ class TargetConfig(BaseModel):
             "body": self.body,
             "path": self.path,
         }
+        if self.type == "claude_code":
+            out["claude_command"] = self.claude_command
+            out["allowed_tools"] = self.allowed_tools
+        return out
 
 
 class ProbeConfig(BaseModel):

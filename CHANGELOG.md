@@ -15,6 +15,33 @@ ambiguity that produced those three.
 
 ## Unreleased
 
+- New target, `type: claude_code`: shells out to the `claude` CLI already
+  installed and authenticated on this machine, so a probe draws on a Claude Pro
+  or Max subscription instead of needing a separately billed API key. Verified
+  end to end against a real install, including the false-positive path
+  (`stillsane bands`) and `response_complete`.
+
+  Two things are worth knowing before pointing a probe here, both found by
+  testing against a real install rather than assumed. First, `--bare` mode was
+  ruled out on purpose: its own `--help` text says OAuth and keychain auth are
+  never read there, which would force the very API key this target exists to
+  avoid, so it runs in ordinary mode and accepts a larger tool surface instead.
+  Second, every tool is denied by default, but denial is not the same as an
+  attempt never being made -- three identical adversarial prompts under
+  identical deny flags produced three different garbled attempts to invoke one
+  anyway. Output that looks like a leaked attempt is detected and marked as an
+  error rather than silently compared against a baseline as if it were real
+  content, but plain generation is the recommended shape of probe for this
+  target regardless. `allowed_tools` opts a probe into agentic mode with an
+  explicit allowlist instead of a blanket switch, for something genuinely
+  supposed to use tools; that mode has had far less real-world testing.
+
+  Caught mid-implementation: adding `claude_command`/`allowed_tools`
+  unconditionally to every target's config hash invalidated every existing
+  baseline of every type, not just `claude_code` ones, the moment the schema
+  gained the fields. They are now only part of the hash for the type they
+  apply to.
+
 - New always-on signal, `response_complete`: did the response finish on its own,
   or get cut off by the token limit. Reads `finish_reason` (OpenAI-shaped
   targets) or `stop_reason` (Anthropic, and any `http` target that exposes it),

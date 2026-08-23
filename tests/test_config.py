@@ -160,6 +160,61 @@ def test_hash_is_stable_across_processes():
     assert len(config_hash(probe, target)) == 16
 
 
+def test_claude_code_only_fields_do_not_touch_other_targets_hash():
+    """A field meaningful only to `claude_code` must not appear in another
+    target's `identity()` at all -- present with a stable default value is not
+    good enough. Adding any new key to the dict, for any reason, changes every
+    existing target's hash the moment someone upgrades, which invalidates every
+    baseline in existence overnight regardless of what that key's value is.
+
+    Caught for real: `claude_command`/`allowed_tools` were added unconditionally
+    once, and the bundled example's own committed baseline refused to compare
+    against a fresh check because of it.
+    """
+    probe, http_target = _pair()
+    before = config_hash(probe, http_target)
+
+    # Simulates what upgrading past this feature looks like for a target that has
+    # nothing to do with it: the schema now has the new fields, at their defaults,
+    # on every target regardless of type.
+    same_target_after_upgrade = TargetConfig(
+        name="prod", base_url="https://a/v1", model="m",
+        claude_command="claude", allowed_tools=None,
+    )
+    assert config_hash(probe, same_target_after_upgrade) == before
+
+
+def test_claude_code_fields_do_affect_a_claude_code_targets_hash():
+    """The other half: for the type they are meaningful to, they must count."""
+    probe = ProbeConfig(id="p", prompt="base prompt")
+    a = TargetConfig(name="c", type="claude_code")
+    b = TargetConfig(name="c", type="claude_code", allowed_tools=["Read"])
+    assert config_hash(probe, a) != config_hash(probe, b)
+
+
+# --- Per-type validation ----------------------------------------------------
+
+
+@pytest.mark.parametrize("target_type", ["openai_compatible", "http"])
+def test_base_url_is_required_for_url_based_types(target_type):
+    with pytest.raises(ValueError, match="base_url"):
+        TargetConfig(name="t", type=target_type, model="m", body={"q": "{{prompt}}"})
+
+
+def test_base_url_is_not_required_for_claude_code():
+    """Nothing to point it at -- this target shells out to a local binary."""
+    TargetConfig(name="claude", type="claude_code")  # must not raise
+
+
+def test_claude_command_defaults_to_the_bare_command():
+    assert TargetConfig(name="claude", type="claude_code").claude_command == "claude"
+
+
+def test_allowed_tools_defaults_to_none():
+    """None is the safe default: deny-everything mode, not agentic mode."""
+    assert TargetConfig(name="claude", type="claude_code").allowed_tools is None
+
+
 # --- Loading --------------------------------------------------------------
 
 

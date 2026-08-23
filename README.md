@@ -580,6 +580,88 @@ targets:
 a filter form (`content[type=text].text`). The filter matters on Anthropic: with
 thinking enabled `content.0` is the thinking block, not the answer.
 
+**Running probes through a Claude Pro or Max subscription instead of a metered
+API key.** If you already pay for Claude Code, a drift canary should not need a
+second, separately billed key just to sample a probe. `type: claude_code` shells
+out to the `claude` CLI already installed and authenticated on this machine, so a
+probe draws on whatever that login already covers:
+
+```yaml
+targets:
+  - name: claude
+    type: claude_code
+    model: claude-opus-5   # optional; omit to use claude's own default
+
+probes:
+  - id: haiku
+    prompt: "Write a three-line haiku about autumn leaves."
+    baseline_samples: 3
+    check_samples: 2
+```
+
+That is a real, complete example, verified against a live install:
+
+```
+PASS   haiku @ claude
+  semantic_distance          0.4351  band <=0.5915            z=+0.0
+  length_chars                   82  band 68.1..85.9          z=+1.7
+  completion_tokens              34  band 23.1..40.9          z=+0.8
+  cost_usd                $0.039313  band <=0.04317 (floor)   z=+0.0
+  latency_ms                 4846ms  band <=7618 (floor)      z=+0.0
+  model_id             claude-opus-5
+  response_complete        complete  band >=1
+
+------------------------------------------------------------
+1 pass   ->  PASS
+```
+
+Unlike the mock-provider examples elsewhere in this README, these exact numbers
+cannot be reproduced -- a real model genuinely varies run to run, which is the
+whole reason a band exists rather than a fixed threshold. Re-running the same
+probe against the same install produced a WARN a few minutes later, on the same
+haiku prompt, for the same honest reason: token count drifted a little further
+than usual. The shape shown -- which signals appear, what they measure -- is real
+and stable; the values will differ every time you run it yourself.
+
+Two things worth being straight about before you rely on this daily, both found
+by testing against a real install rather than assumed:
+
+- **Whether `cost_usd` is money actually charged beyond your subscription is not
+  something this tool can tell you.** Claude Code reports a cost figure for its
+  own usage tracking regardless of how a session is authenticated, and this target
+  simply passes that number through. Check your own account before assuming it is
+  free.
+- **`--bare` mode was ruled out on purpose.** Its own `--help` text says OAuth and
+  keychain auth are never read there, which would force the very API key this
+  target exists to avoid. Running in ordinary mode instead means accepting a
+  larger tool surface, and every tool is denied by default -- but tool *denial* is
+  not the same as tool *use never being attempted*. Three identical adversarial
+  prompts under identical deny flags produced three different garbled attempts to
+  invoke one anyway, never the same way twice, though nothing observed suggested a
+  command actually ran. Denied output that looks like this is detected and marked
+  as an error rather than silently compared against a baseline as if it were real
+  content. Probes that read as an instruction to look something up, check
+  something or run something are the ones most likely to trigger it; plain
+  generation -- summarise, extract, write, the haiku above -- has not shown this
+  behaviour in testing.
+
+For a probe that is genuinely supposed to use tools -- testing against a real
+dataset, say -- name exactly which ones with `allowed_tools`:
+
+```yaml
+    type: claude_code
+    allowed_tools: [Read, Glob, Grep]   # read-only; nothing else is available
+```
+
+Deliberately an allowlist rather than an `agentic: true` switch: an unattended
+daily cron job silently granted broad tool access is a materially larger risk than
+one that can only do exactly what it was told it may do. This mode has had far
+less real-world testing than the default and no MCP server is ever reachable
+either way, regardless of what is configured on the machine running the check.
+
+`claude_command` overrides the binary invoked, if `claude` on `PATH` is not the
+right one to use.
+
 Also on a target: `timeout_s`, `retries`, `retry_backoff_s`, `temperature`,
 `max_tokens`, and `escalate_fingerprint` to make a changed fingerprint fail rather
 than warn.
