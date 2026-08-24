@@ -142,7 +142,14 @@ class ClaudeCodeTarget(Target):
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(probe.prompt.encode()), timeout=self.config.timeout_s
             )
-        except TimeoutError:
+        # `asyncio.TimeoutError` and the builtin `TimeoutError` were only unified in
+        # Python 3.11. This project supports 3.10, where `asyncio.wait_for` raises
+        # the asyncio one specifically, and `except TimeoutError` alone does not
+        # catch it -- the exception would propagate unhandled and abort the whole
+        # run, breaking the exact "failures are captured, never raised" contract
+        # this module's own timeout handling exists to uphold. Catching both is
+        # redundant on 3.11+, where they are the same class, and required on 3.10.
+        except (TimeoutError, asyncio.TimeoutError):
             proc.kill()
             await proc.wait()
             sample.latency_ms = (time.perf_counter() - started) * 1000.0

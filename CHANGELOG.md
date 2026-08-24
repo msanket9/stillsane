@@ -42,6 +42,17 @@ ambiguity that produced those three.
   gained the fields. They are now only part of the hash for the type they
   apply to.
 
+  Also caught, on a real Python 3.10 interpreter rather than assumed: the
+  timeout handler around the subprocess call caught only `TimeoutError`.
+  `asyncio.TimeoutError` and the builtin `TimeoutError` are the same class
+  from Python 3.11 onward, but not on 3.10, which this project still
+  supports -- there, `asyncio.wait_for`'s real exception slipped past the
+  `except` clause entirely and would have aborted the whole run instead of
+  being captured as a retryable sample error. Confirmed by reverting the fix
+  and watching the unhandled `asyncio.exceptions.TimeoutError` traceback on
+  3.10, then restoring it and rerunning both the target's own suite and the
+  full suite on the same interpreter.
+
 - New always-on signal, `response_complete`: did the response finish on its own,
   or get cut off by the token limit. Reads `finish_reason` (OpenAI-shaped
   targets) or `stop_reason` (Anthropic, and any `http` target that exposes it),
