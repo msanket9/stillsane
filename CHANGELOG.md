@@ -15,6 +15,34 @@ ambiguity that produced those three.
 
 ## Unreleased
 
+- Fixed a real data-loss race in `stillsane baseline`: two processes capturing
+  the same target/probe at once (a double-launched cron job, or re-running one
+  while an earlier invocation is still in flight) both read the same
+  `latest_version`, both computed the same next version number, and both wrote
+  into that one directory -- `exist_ok=True` let the second silently overwrite
+  the first with no error anywhere, losing a whole baseline. `save()` now
+  claims its version directory with a plain, OS-atomic `mkdir(exist_ok=False)`
+  and retries the next number on collision.
+- Fixed `stillsane check` crashing outright, discarding an already-computed
+  verdict, when `alerts.webhook` or `alerts.slack_webhook` was malformed.
+  `httpx.InvalidURL` is not an `httpx.HTTPError` subclass, so it slipped past
+  the handler meant to make delivery best-effort, contradicting this module's
+  own "a webhook that is down must not turn a successful check into a failed
+  one" promise.
+- Fixed `-c/--config` only being accepted before the subcommand
+  (`stillsane --config foo.yaml check`). `stillsane check --config foo.yaml`,
+  the ordering almost anyone reaches for first, failed with "unrecognized
+  arguments". Both orderings now work.
+- Fixed `TargetConfig.identity()` (and so the config hash) missing `response_path`
+  and `method` for `http` targets entirely. `response_path` is what decides which
+  part of the response gets compared -- editing it, e.g. fixing `content.0` to
+  `content[type=text].text` for a thinking model, the exact scenario this README
+  already documents, changed the comparison itself without invalidating the
+  baseline, so a check kept comparing the new extraction against a baseline
+  captured under the old one and could report provider drift for a change made
+  locally. Scoped to `http` only, same as `claude_command`/`allowed_tools` are
+  scoped to `claude_code`, so this does not touch any other type's hash.
+
 - New target, `type: claude_code`: shells out to the `claude` CLI already
   installed and authenticated on this machine, so a probe draws on a Claude Pro
   or Max subscription instead of needing a separately billed API key. Verified

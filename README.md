@@ -662,9 +662,13 @@ either way, regardless of what is configured on the machine running the check.
 `claude_command` overrides the binary invoked, if `claude` on `PATH` is not the
 right one to use.
 
-Also on a target: `timeout_s`, `retries`, `retry_backoff_s`, `temperature`,
-`max_tokens`, and `escalate_fingerprint` to make a changed fingerprint fail rather
-than warn.
+Also on a target: `timeout_s`, `retries`, `retry_backoff_s`, and
+`escalate_fingerprint` to make a changed fingerprint fail rather than warn.
+
+`temperature` and `max_tokens` are accepted in config but have no effect here --
+the `claude` CLI's `-p` mode has no flag for either, unlike the other target
+types, which do support both. Verified against `claude --help` directly rather
+than assumed.
 
 `samples: 5` also works and sets the baseline count.
 

@@ -82,7 +82,13 @@ def _post(url: str, body: dict, timeout: float = 10.0) -> bool:
             )
             return False
         return True
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:
+        # `httpx.InvalidURL` is not an `httpx.HTTPError` subclass, so a malformed
+        # `webhook`/`slack_webhook` in the config (a stray control character, an
+        # unterminated IPv6-literal bracket) raised straight through `send()` and
+        # crashed the whole `check` invocation on a run that had already produced
+        # a valid verdict -- exactly what this module's own docstring says must
+        # never happen.
         print(f"stillsane: could not deliver alert: {exc}", file=sys.stderr)
         return False
 

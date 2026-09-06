@@ -136,11 +136,27 @@ class BaselineStore:
         pooled: dict[str, list[float]] | None = None,
         anchors: dict[str, Anchor] | None = None,
     ) -> Baseline:
-        """Write a new baseline version. Never overwrites an existing one."""
-        previous = self.latest_version(target_name, probe_id) or 0
-        version = previous + 1
-        path = self._dir(target_name, probe_id) / f"v{version}"
-        path.mkdir(parents=True, exist_ok=True)
+        """Write a new baseline version. Never overwrites an existing one.
+
+        Claims the version directory with a plain `mkdir(exist_ok=False)` rather
+        than trusting `latest_version` + 1, because that read-then-write is a
+        race: two `stillsane baseline` processes racing for the same target/probe
+        (a double-launched cron job, or a person re-running while an earlier
+        invocation is still in flight) can both read the same `latest_version`,
+        both compute the same next number, and both write into the same
+        directory -- `mkdir(..., exist_ok=True)` let that through silently,
+        losing every write but one with no error anywhere. `mkdir` on a single
+        path is atomic at the OS level, so the loser here gets `FileExistsError`
+        and retries at the next number instead of overwriting the winner.
+        """
+        version = (self.latest_version(target_name, probe_id) or 0) + 1
+        while True:
+            path = self._dir(target_name, probe_id) / f"v{version}"
+            try:
+                path.mkdir(parents=True, exist_ok=False)
+                break
+            except FileExistsError:
+                version += 1
 
         usable = [s for s in samples if s.ok]
         created = datetime.now(timezone.utc).isoformat(timespec="seconds")

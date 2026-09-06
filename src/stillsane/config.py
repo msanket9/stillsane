@@ -118,13 +118,22 @@ class TargetConfig(BaseModel):
     def identity(self) -> dict[str, Any]:
         """The parts of a target that change what the output looks like.
 
-        `claude_command`/`allowed_tools` are added to the dict only for
-        `claude_code`, never present for the other types. Adding any new key here
+        Type-specific fields (`claude_command`/`allowed_tools` for `claude_code`,
+        `response_path`/`method` for `http`) are added to the dict only for the
+        type they apply to, never present for the others. Adding any new key here
         unconditionally changes every existing target's hash the moment someone
         upgrades, regardless of the key's value, and invalidates every baseline
-        in existence overnight -- caught by the bundled example's own committed
-        baseline refusing to compare after these two fields were added
-        unconditionally in testing.
+        in existence overnight -- caught once already, by the bundled example's
+        own committed baseline refusing to compare after `claude_command` and
+        `allowed_tools` were added unconditionally in testing.
+
+        `response_path` and `method` were missing here entirely until this was
+        found in a later sweep: editing `response_path` on an `http` target --
+        the exact scenario this README calls out, fixing `content.0` to
+        `content[type=text].text` for Anthropic's thinking blocks -- changed what
+        gets extracted and compared without touching the hash, so a check kept
+        comparing the new extraction against a baseline captured with the old
+        one and could report provider drift for a change made locally.
         """
         out: dict[str, Any] = {
             "type": self.type,
@@ -138,6 +147,9 @@ class TargetConfig(BaseModel):
         if self.type == "claude_code":
             out["claude_command"] = self.claude_command
             out["allowed_tools"] = self.allowed_tools
+        if self.type == "http":
+            out["response_path"] = self.response_path
+            out["method"] = self.method
         return out
 
 

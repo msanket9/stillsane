@@ -27,6 +27,31 @@ def test_saving_never_overwrites(tmp_path):
     assert store.load("prod", "p").samples[0].text == "second"  # latest by default
 
 
+def test_concurrent_saves_do_not_clobber_each_other(tmp_path, monkeypatch):
+    """Two `stillsane baseline` processes racing on the same target/probe -- a
+    double-launched cron job, or a person re-running one while an earlier
+    invocation is still in flight -- used to both read the same
+    `latest_version`, both compute the same next number, and both write into
+    that one directory: `mkdir(..., exist_ok=True)` let the second silently
+    overwrite the first, with no error anywhere, losing a whole baseline.
+
+    Pins both callers to the same stale `latest_version` to force the race
+    deterministically rather than relying on real process timing. `save()`
+    claims its directory with a plain `mkdir` (atomic, `exist_ok=False`) and
+    retries the next number on collision, so the loser here should land at v2
+    instead of overwriting the winner at v1.
+    """
+    store = BaselineStore(tmp_path)
+    monkeypatch.setattr(store, "latest_version", lambda *a: 0)
+
+    a = store.save("prod", "p", [sample("first")], "hash1")
+    b = store.save("prod", "p", [sample("second")], "hash2")
+
+    assert {a.version, b.version} == {1, 2}
+    assert store.load("prod", "p", version=a.version).samples[0].text == "first"
+    assert store.load("prod", "p", version=b.version).samples[0].text == "second"
+
+
 def test_round_trip_preserves_everything_compared(tmp_path):
     store = BaselineStore(tmp_path)
     original = [

@@ -422,6 +422,26 @@ def test_a_webhook_returning_an_error_is_reported_not_raised(env, monkeypatch, c
     assert "HTTP 500" in capsys.readouterr().err
 
 
+def test_a_malformed_webhook_url_does_not_crash_the_check(env, monkeypatch, capsys):
+    """`httpx.InvalidURL` is not an `httpx.HTTPError` subclass, so a stray control
+    character or an unterminated IPv6-literal bracket in a configured webhook URL
+    raised straight through `send()` and crashed the whole `check` invocation on a
+    run that had already produced a valid verdict -- exactly the outcome this
+    module's own docstring says a broken sink must never cause.
+    """
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    result = run_check(config, store, history, DRIFTED)
+
+    def explode(url, **kw):
+        raise httpx.InvalidURL("no host supplied")
+
+    monkeypatch.setattr("stillsane.alerts.httpx.post", explode)
+    send(result, "https://[::1", None)  # must not raise
+
+    assert "could not deliver alert" in capsys.readouterr().err
+
+
 class _Ok:
     def __init__(self, status_code: int = 200) -> None:
         self.status_code = status_code
@@ -457,6 +477,35 @@ def test_missing_config_exits_cleanly(tmp_path, capsys):
     code = cli.main(["-c", str(tmp_path / "nope.yaml"), "check"])
     assert code == 3
     assert "stillsane init" in capsys.readouterr().err
+
+
+def test_config_flag_also_works_after_the_subcommand(tmp_path, capsys):
+    """`-c/--config` lived only on the top-level parser, so `stillsane check
+    --config foo.yaml` -- the ordering almost anyone types first -- failed with
+    "unrecognized arguments" rather than the config-not-found message this test
+    asserts on. Both orderings must reach the same, correct config path.
+    """
+    path = tmp_path / "nope.yaml"
+    code = cli.main(["check", "--config", str(path)])
+    assert code == 3
+    assert "stillsane init" in capsys.readouterr().err
+
+
+def test_config_flag_before_the_subcommand_is_not_reset_by_it(tmp_path, capsys):
+    """A subparser sharing the `-c` action's underlying default-handling with the
+    top-level parser could silently discard a `-c` already parsed before the
+    subcommand and fall back to the default config path instead -- caught by
+    exactly this ordering pointing somewhere a real config does not exist.
+    """
+    path = tmp_path / "nope.yaml"
+    code = cli.main(["-c", str(path), "check"])
+    assert code == 3
+    err = capsys.readouterr().err
+    assert "stillsane init" in err
+    # Confirms the path that was actually looked up, not just that some error
+    # fired: if a subparser default silently replaced it, this would name
+    # `DEFAULT_CONFIG` ("stillsane.yaml") instead of the path given here.
+    assert str(path) in err
 
 
 def test_cli_check_returns_the_drift_exit_code(tmp_path, monkeypatch, capsys):

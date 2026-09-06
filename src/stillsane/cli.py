@@ -466,17 +466,47 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    # `-c/--config` on a shared, help-less parent so every subparser accepts it
+    # too, not only the top-level one. Registering it solely on `parser` meant
+    # `stillsane check --config foo.yaml` -- the order almost anyone types
+    # first, and the only one used throughout this file's own examples below --
+    # failed with "unrecognized arguments", since argparse subparsers do not
+    # inherit a parent's options positioned after the subcommand token. Only
+    # `stillsane --config foo.yaml check` worked, and that ordering appears
+    # nowhere in the README.
+    #
+    # `default=SUPPRESS` on the shared copy, not `DEFAULT_CONFIG`: a
+    # subparser's own action defaults are applied to its (separate) namespace
+    # whenever the dest is not already present there, and SUPPRESS is the one
+    # default value that skips that. Without it, a subparser with no `-c` of
+    # its own on the remaining tokens would set its copy of `config` back to
+    # the default, and `_SubParsersAction` unconditionally overwrites the
+    # outer namespace with everything the subparser namespace has -- silently
+    # discarding a `-c` already parsed at the top level.
+    #
+    # The top level keeps its own separate `-c` action with the real default,
+    # rather than also taking it from `common` via `parents`: `parents` reuses
+    # the identical `Action` object rather than copying it, and calling
+    # `set_defaults` mutates that object's `.default` in place -- so a shared
+    # action would have carried the top level's default onto every
+    # subparser's copy too, silently undoing the SUPPRESS above and
+    # reintroducing the exact bug it exists to prevent. Caught by the test
+    # suite: `-c` before the subcommand stopped working the moment this was
+    # tried with a shared parent instead.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("-c", "--config", default=argparse.SUPPRESS, help="config file")
+
     parser = argparse.ArgumentParser(
         prog="stillsane",
         description="Know when your LLM app quietly stops working.",
     )
-    parser.add_argument("--version", action="version", version=f"stillsane {__version__}")
     parser.add_argument(
         "-c", "--config", default=DEFAULT_CONFIG, help=f"config file (default: {DEFAULT_CONFIG})"
     )
+    parser.add_argument("--version", action="version", version=f"stillsane {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_init = sub.add_parser("init", help="write a starter config")
+    p_init = sub.add_parser("init", help="write a starter config", parents=[common])
     p_init.add_argument("--force", action="store_true", help="overwrite an existing config")
     p_init.add_argument(
         "--from-logs",
@@ -505,17 +535,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_init.set_defaults(func=cmd_init)
 
-    p_base = sub.add_parser("baseline", help="capture a new baseline (explicit, never automatic)")
+    p_base = sub.add_parser(
+        "baseline", help="capture a new baseline (explicit, never automatic)", parents=[common]
+    )
     p_base.add_argument("--probe", action="append", help="limit to this probe id (repeatable)")
     p_base.set_defaults(func=cmd_baseline)
 
-    p_check = sub.add_parser("check", help="run once, compare, exit non-zero on drift")
+    p_check = sub.add_parser(
+        "check", help="run once, compare, exit non-zero on drift", parents=[common]
+    )
     p_check.add_argument("--probe", action="append", help="limit to this probe id (repeatable)")
     p_check.add_argument("-v", "--verbose", action="store_true", help="show signals that passed")
     p_check.add_argument("--json", action="store_true", help="machine-readable output")
     p_check.set_defaults(func=cmd_check)
 
-    p_bands = sub.add_parser("bands", help="show the learned bands and flag ones that will misreport")
+    p_bands = sub.add_parser(
+        "bands", help="show the learned bands and flag ones that will misreport", parents=[common]
+    )
     p_bands.add_argument("--probe", action="append", help="limit to this probe id (repeatable)")
     p_bands.add_argument(
         "-v", "--verbose", action="store_true", help="show every band, not only the suspect ones"
@@ -526,7 +562,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_bands.add_argument("--json", action="store_true", help="machine-readable output")
     p_bands.set_defaults(func=cmd_bands)
 
-    p_status = sub.add_parser("status", help="is the canary itself alive and reporting?")
+    p_status = sub.add_parser(
+        "status", help="is the canary itself alive and reporting?", parents=[common]
+    )
     p_status.add_argument(
         "--expect-every",
         metavar="INTERVAL",
@@ -538,7 +576,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.set_defaults(func=cmd_status)
 
     p_cal = sub.add_parser(
-        "calibrate", help="what your clean runs say about warn_k and drift_k"
+        "calibrate", help="what your clean runs say about warn_k and drift_k", parents=[common]
     )
     p_cal.add_argument("--probe", action="append", help="limit to this probe id (repeatable)")
     p_cal.add_argument(
@@ -550,7 +588,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_cal.add_argument("--json", action="store_true", help="machine-readable output")
     p_cal.set_defaults(func=cmd_calibrate)
 
-    p_hist = sub.add_parser("history", help="what past runs recorded, and when a signal moved")
+    p_hist = sub.add_parser(
+        "history", help="what past runs recorded, and when a signal moved", parents=[common]
+    )
     p_hist.add_argument("--probe", help="probe id (with --signal)")
     p_hist.add_argument("--target", help="target name (with --signal)")
     p_hist.add_argument("--signal", help="show this signal over time, e.g. semantic_distance")
@@ -560,7 +600,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_hist.add_argument("--limit", type=int, default=20, help="rows to show (default: 20)")
     p_hist.set_defaults(func=cmd_history)
 
-    p_watch = sub.add_parser("watch", help="scheduled mode (prefer cron or CI for anything real)")
+    p_watch = sub.add_parser(
+        "watch", help="scheduled mode (prefer cron or CI for anything real)", parents=[common]
+    )
     p_watch.add_argument("--probe", action="append", help="limit to this probe id (repeatable)")
     p_watch.add_argument("-v", "--verbose", action="store_true")
     p_watch.add_argument("--json", action="store_true")

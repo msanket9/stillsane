@@ -192,6 +192,37 @@ def test_claude_code_fields_do_affect_a_claude_code_targets_hash():
     assert config_hash(probe, a) != config_hash(probe, b)
 
 
+def test_changing_response_path_invalidates_an_http_targets_baseline():
+    """`response_path` decides what gets extracted and compared -- editing it,
+    e.g. fixing `content.0` to `content[type=text].text` for a thinking model,
+    changes the comparison itself and must not be silently compared against a
+    baseline captured under the old extraction.
+    """
+    probe = ProbeConfig(id="p", prompt="base prompt")
+    a = TargetConfig(name="t", type="http", base_url="https://x", body={"q": "{{prompt}}"},
+                      response_path="content.0.text")
+    b = TargetConfig(name="t", type="http", base_url="https://x", body={"q": "{{prompt}}"},
+                      response_path="content[type=text].text")
+    assert config_hash(probe, a) != config_hash(probe, b)
+
+
+def test_changing_method_invalidates_an_http_targets_baseline():
+    probe = ProbeConfig(id="p", prompt="base prompt")
+    a = TargetConfig(name="t", type="http", base_url="https://x", body={"q": "{{prompt}}"}, method="POST")
+    b = TargetConfig(name="t", type="http", base_url="https://x", body={"q": "{{prompt}}"}, method="GET")
+    assert config_hash(probe, a) != config_hash(probe, b)
+
+
+def test_response_path_does_not_touch_a_non_http_targets_hash():
+    """Mirrors the claude_code-only-fields test above: an http-only field must
+    not be part of the hash for a type it has no meaning for.
+    """
+    probe, target = _pair()
+    before = config_hash(probe, target)
+    same_after_upgrade = TargetConfig(name="prod", base_url="https://a/v1", model="m", response_path="x")
+    assert config_hash(probe, same_after_upgrade) == before
+
+
 # --- Per-type validation ----------------------------------------------------
 
 
