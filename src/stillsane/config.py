@@ -17,13 +17,15 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .compare.variance import BandConfig
 
 
 class TargetConfig(BaseModel):
     """A live endpoint to probe. Speaks plain HTTP; nothing is instrumented."""
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str
     type: Literal["openai_compatible", "http", "claude_code"] = "openai_compatible"
@@ -154,6 +156,8 @@ class TargetConfig(BaseModel):
 
 
 class ProbeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     prompt: str
     system: str | None = None
@@ -211,6 +215,8 @@ class ProbeConfig(BaseModel):
 
 
 class ThresholdConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     warn_k: float = 3.0
     drift_k: float = 6.0
     min_confident_n: int = 4
@@ -229,6 +235,8 @@ class JudgeConfig(BaseModel):
     with the same deployment you are watching means a provider-side change moves
     both the thing being measured and the instrument measuring it.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     base_url: str
     model: str
@@ -267,6 +275,8 @@ class JudgeConfig(BaseModel):
 
 
 class AlertConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     webhook: str | None = None
     slack_webhook: str | None = None
     #: Whether WARN breaks the build. Off by default: warnings are for reading,
@@ -275,6 +285,8 @@ class AlertConfig(BaseModel):
 
 
 class Config(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     targets: list[TargetConfig]
     probes: list[ProbeConfig]
     thresholds: ThresholdConfig = Field(default_factory=ThresholdConfig)

@@ -63,6 +63,21 @@ def test_http_target_requires_a_body():
         TargetConfig(name="t", type="http", base_url="https://x")
 
 
+def test_misspelled_target_key_is_rejected_by_name():
+    bad = {
+        **MINIMAL,
+        "targets": [{**MINIMAL["targets"][0], "escalate_fingerpint": True}],
+    }
+    with pytest.raises(ValidationError, match="escalate_fingerpint"):
+        Config.model_validate(bad)
+
+
+def test_misspelled_alerts_key_is_rejected_by_name():
+    bad = {**MINIMAL, "alrets": {"webhook": "https://example.com"}}
+    with pytest.raises(ValidationError, match="alrets"):
+        Config.model_validate(bad)
+
+
 def test_duplicate_names_are_rejected():
     bad = {**MINIMAL, "targets": MINIMAL["targets"] * 2}
     with pytest.raises(ValidationError, match="duplicate target names"):
