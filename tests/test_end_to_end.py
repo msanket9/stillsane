@@ -527,6 +527,43 @@ def test_cli_check_returns_the_drift_exit_code(tmp_path, monkeypatch, capsys):
     assert "DRIFT" in capsys.readouterr().out
 
 
+def test_missing_api_key_is_an_error_not_a_traceback(tmp_path, monkeypatch, capsys):
+    """A missing `api_key_env` used to raise `RuntimeError` from `build_request`,
+    uncaught anywhere, and an uncaught exception exits 1 -- the DRIFT code. A CI
+    job with a misconfigured secret would read that as "the model drifted"
+    rather than "the job is broken", the exact confusion this tool exists to
+    prevent.
+    """
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(CONFIG))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    capsys.readouterr()
+
+    keyed = {**CONFIG, "targets": [{**CONFIG["targets"][0], "api_key_env": "STILLSANE_TEST_MISSING_KEY"}]}
+    config_path.write_text(yaml.safe_dump(keyed))
+    monkeypatch.delenv("STILLSANE_TEST_MISSING_KEY", raising=False)
+
+    code = cli.main(["-c", str(config_path), "check"])
+    assert code == 3
+    assert "STILLSANE_TEST_MISSING_KEY" in capsys.readouterr().out
+
+
+def test_an_invalid_config_is_an_error_not_a_traceback(tmp_path, capsys):
+    """A config that fails pydantic validation used to raise `ValidationError`
+    from inside `_load`, uncaught in `main`, which exits 1 -- the DRIFT code --
+    for a file that was never even loaded.
+    """
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump({**CONFIG, "state_dir": 123}))
+
+    code = cli.main(["-c", str(config_path), "check"])
+    assert code == 3
+    assert "stillsane:" in capsys.readouterr().err
+
+
 def test_cli_check_rejects_an_unknown_probe(tmp_path, monkeypatch, capsys):
     """A typo'd `--probe` must not silently no-op and report success.
 

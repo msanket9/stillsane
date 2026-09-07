@@ -619,7 +619,13 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        # Every path here is a setup mistake, not a measurement: a missing API
+        # key, an invalid config, an embedder that failed to load. None of them
+        # observed the endpoint, so none of them get to exit 1 -- that is the
+        # DRIFT code, and a monitor that reports "drift" for its own
+        # misconfiguration is worse than useless. This is the backstop; specific
+        # commands may still catch these earlier to add command-specific detail.
         print(f"stillsane: {exc}", file=sys.stderr)
         return EXIT_CODES[Level.ERROR]
     except KeyboardInterrupt:

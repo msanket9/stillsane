@@ -169,10 +169,10 @@ class Target(ABC):
         as retryable long after the fact.
         """
         sample = Sample(probe_id=probe.id, target_name=self.name)
-        method, url, headers, payload = self.build_request(probe)
 
         started = time.perf_counter()
         try:
+            method, url, headers, payload = self.build_request(probe)
             response = await client.request(
                 method, url, headers=headers, json=payload, timeout=self.config.timeout_s
             )
@@ -195,6 +195,13 @@ class Target(ABC):
             for field, value in self.parse(probe, body).items():
                 setattr(sample, field, value)
 
+        except RuntimeError as exc:
+            # Setup failed before any request was sent -- typically a missing
+            # API key. Not transient: retrying without fixing the environment
+            # asks the same broken question again.
+            sample.latency_ms = (time.perf_counter() - started) * 1000.0
+            sample.error = str(exc)
+            return sample, False
         except httpx.TimeoutException:
             sample.latency_ms = (time.perf_counter() - started) * 1000.0
             sample.error = f"timeout after {self.config.timeout_s}s"
