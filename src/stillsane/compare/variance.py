@@ -483,8 +483,13 @@ def evaluate_categorical(
     if not base_vals or not cur_vals:
         return None  # Provider does not expose it.
 
+    # A provider that load-balances across backend builds returns several
+    # values across baseline calls, and a short check run drawing only one of
+    # them is not a change -- it is the same population, sampled less. Only a
+    # value *never seen at baseline* is worth reporting.
     base_set, cur_set = set(base_vals), set(cur_vals)
-    if base_set == cur_set:
+    new = cur_set - base_set
+    if not new:
         return SignalVerdict(
             signal=signal.name,
             kind=SignalKind.CATEGORICAL,
@@ -499,7 +504,7 @@ def evaluate_categorical(
         signal=signal.name,
         kind=SignalKind.CATEGORICAL,
         level=level,
-        detail=f"{', '.join(sorted(base_set))} -> {', '.join(sorted(cur_set))}",
+        detail=f"{', '.join(sorted(base_set))} -> {', '.join(sorted(new))}",
         observed_label=", ".join(sorted(cur_set)),
         baseline_label=", ".join(sorted(base_set)),
     )

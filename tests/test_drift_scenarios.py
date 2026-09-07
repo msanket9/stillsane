@@ -255,6 +255,47 @@ def test_stable_fingerprint_is_silent(signals_for):
     assert verdict.level is Level.PASS
 
 
+def test_a_subset_of_baseline_fingerprints_is_not_drift(signals_for):
+    """A provider that load-balances across backend builds returns several
+    `system_fingerprint` values across baseline calls. A short check run that
+    happens to draw only one of them measured the same population less, not a
+    change -- it must not report drift for a fingerprint the baseline already
+    saw.
+    """
+    baseline_fps = ["fp_a4f2b1", "fp_9c3e88", "fp_a4f2b1", "fp_9c3e88", "fp_a4f2b1"]
+    verdict = compare_probe(
+        probe_id="extract_invoice",
+        target_name="prod",
+        signals=signals_for(["valid_json"]),
+        baseline=[sample(t, fingerprint=fp) for t, fp in zip(STABLE_JSON, baseline_fps, strict=True)],
+        current=[sample(t, fingerprint="fp_a4f2b1") for t in STABLE_JSON[:3]],
+    )
+    assert verdict.level is Level.PASS
+    fp = next(s for s in verdict.signals if s.signal == "fingerprint")
+    assert fp.level is Level.PASS
+
+
+def test_a_genuinely_new_fingerprint_still_warns_and_names_only_itself(signals_for):
+    """The counterpart to the subset case above: a value the baseline never saw
+    at all is real drift, and the report should name only what is new -- not
+    the baseline's own fingerprints re-echoed back as if they too were new.
+    """
+    baseline_fps = ["fp_a4f2b1", "fp_9c3e88", "fp_a4f2b1", "fp_9c3e88", "fp_a4f2b1"]
+    verdict = compare_probe(
+        probe_id="extract_invoice",
+        target_name="prod",
+        signals=signals_for(["valid_json"]),
+        baseline=[sample(t, fingerprint=fp) for t, fp in zip(STABLE_JSON, baseline_fps, strict=True)],
+        current=[sample(t, fingerprint="fp_c00000") for t in STABLE_JSON[:3]],
+    )
+    assert verdict.level is Level.WARN
+    fp = next(s for s in verdict.signals if s.signal == "fingerprint")
+    assert fp.level is Level.WARN
+    assert "fp_c00000" in fp.detail
+    assert "fp_a4f2b1" not in fp.detail.split(" -> ")[1]
+    assert "fp_9c3e88" not in fp.detail.split(" -> ")[1]
+
+
 # --- Agent-shaped drift ---------------------------------------------------
 
 
