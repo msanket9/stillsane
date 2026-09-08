@@ -200,6 +200,18 @@ def test_always_on_signals_need_no_config(embedder):
     assert {"semantic_distance", "fingerprint", "latency_ms", "completion_tokens"} <= names
 
 
+def test_watch_fingerprint_false_drops_the_signal_entirely(embedder):
+    names = {s.name for s in build_signals(None, embedder, watch_fingerprint=False)}
+    assert "fingerprint" not in names
+    # Nothing else about the always-on set should move.
+    assert {"semantic_distance", "latency_ms", "completion_tokens", "model_id"} <= names
+
+
+def test_watch_fingerprint_defaults_to_true(embedder):
+    names = {s.name for s in build_signals(None, embedder)}
+    assert "fingerprint" in names
+
+
 def test_semantic_threshold_can_be_pinned(embedder):
     signals = build_signals([{"semantic_similarity": 0.2}], embedder)
     semantic = next(s for s in signals if s.name == "semantic_distance")

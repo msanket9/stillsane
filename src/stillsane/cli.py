@@ -237,7 +237,7 @@ def cmd_bands(args: argparse.Namespace) -> int:
             if baseline is None:
                 missing.append(f"{probe.id} @ {target.name}")
                 continue
-            signals = build_probe_signals(probe.checks)
+            signals = build_probe_signals(probe.checks, watch_fingerprint=target.watch_fingerprint)
             reports.append(inspect_bands(baseline, signals, cfg, probe.check_samples))
 
     if not reports:

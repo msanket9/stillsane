@@ -144,6 +144,22 @@ def test_fingerprint_change_warns_end_to_end(env):
     assert "fp_old -> fp_new" in fp.detail
 
 
+def test_watch_fingerprint_false_ignores_a_changed_fingerprint(env):
+    """`watch_fingerprint: false` is the documented escape hatch for a provider
+    whose fingerprint churns for reasons that are not drift. It used to be read
+    nowhere: a changed fingerprint still warned regardless of the setting.
+    """
+    config, store, history = env
+    config = Config.model_validate(
+        {**CONFIG, "targets": [{**CONFIG["targets"][0], "watch_fingerprint": False}]}
+    )
+    run_baseline(config, store, STABLE, fingerprint="fp_old")
+    result = run_check(config, store, history, STABLE, fingerprint="fp_new")
+
+    assert result.level is Level.PASS
+    assert not any(s.signal == "fingerprint" for s in result.probes[0].signals)
+
+
 # --- Guard rails ----------------------------------------------------------
 
 

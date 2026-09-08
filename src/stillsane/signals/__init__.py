@@ -66,12 +66,19 @@ def _normalise(check: Any) -> tuple[str, Any]:
     )
 
 
-def build_signals(checks: list[Any] | None, embedder: Embedder) -> list[Signal]:
+def build_signals(
+    checks: list[Any] | None, embedder: Embedder, watch_fingerprint: bool = True
+) -> list[Signal]:
     """Build the signal list for one probe.
 
     `checks` comes straight from YAML. Unknown names raise rather than being
     ignored: a silently dropped check is a check the user believes is protecting
     them when it is not.
+
+    `watch_fingerprint` is the escape hatch for a provider whose
+    `system_fingerprint` churns for reasons that are not drift -- it drops the
+    `Fingerprint` signal entirely rather than merely silencing it, so a target
+    that opts out gets no fingerprint row in the report at all.
     """
     semantic = SemanticDistance(embedder)
     signals: list[Signal] = [
@@ -82,10 +89,11 @@ def build_signals(checks: list[Any] | None, embedder: Embedder) -> list[Signal]:
         CompletionTokens(),
         CostUsd(),
         LatencyMs(),
-        Fingerprint(),
         ModelId(),
         ResponseComplete(),
     ]
+    if watch_fingerprint:
+        signals.append(Fingerprint())
 
     for check in checks or []:
         name, value = _normalise(check)

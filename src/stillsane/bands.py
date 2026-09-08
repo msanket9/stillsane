@@ -477,8 +477,8 @@ def as_json(probes: Sequence[ProbeBands]) -> str:
     return json.dumps(payload(probes), indent=2)
 
 
-def build_probe_signals(checks, embedder=None) -> list[Signal]:
+def build_probe_signals(checks, embedder=None, watch_fingerprint: bool = True) -> list[Signal]:
     """Signal list for inspection, with no model loaded by default."""
     from .signals import build_signals
 
-    return build_signals(checks, embedder or no_embedder())
+    return build_signals(checks, embedder or no_embedder(), watch_fingerprint)

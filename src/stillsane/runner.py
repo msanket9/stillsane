@@ -117,7 +117,9 @@ async def capture_baseline(
         # Anchors and the initial pool come from the within-baseline distances --
         # the same quantity `within_run_evidence` contributes later, so the pool
         # stays internally consistent as it grows.
-        signals = build_signals(plan.probe.checks, embedder)
+        signals = build_signals(
+            plan.probe.checks, embedder, plan.target_config.watch_fingerprint
+        )
         for signal in signals:
             signal.prepare(usable)
 
@@ -275,7 +277,9 @@ async def check(
             [p for p, _ in runnable], [p.probe.check_samples for p, _ in runnable], client
         )
         for (plan, baseline), samples in zip(runnable, batches, strict=True):
-            signals = build_signals(plan.probe.checks, embedder)
+            signals = build_signals(
+                plan.probe.checks, embedder, plan.target_config.watch_fingerprint
+            )
             verdict = compare_probe(
                 probe_id=plan.probe.id,
                 target_name=plan.target_config.name,
