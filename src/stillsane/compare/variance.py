@@ -429,9 +429,14 @@ def evaluate_pointwise(
     # longer perfect is drift regardless of what the band says. A band cannot
     # sensibly be learned from a constant, and "it used to always parse and now
     # sometimes does not" is not a statistical question.
+    #
+    # Keyed on the *minimum* baseline value, not the median (`band.center`): a
+    # 4-of-5 baseline has a median of 1.0 but was not perfect, and the band
+    # path below -- not this contract -- is what a flaky baseline should be
+    # judged against.
     if (
         signal.strict_when_perfect
-        and band.center >= 1.0 - EPS
+        and min(base_vals) >= 1.0 - EPS
         and min(cur_vals) < 1.0 - EPS
     ):
         failed = sum(1 for v in cur_vals if v < 1.0 - EPS)

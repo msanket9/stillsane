@@ -188,6 +188,23 @@ def test_identical_baseline_still_catches_content_change(signals_for):
     assert verdict.level is Level.DRIFT
 
 
+def test_a_baseline_that_was_already_flaky_is_not_held_to_perfection(signals_for):
+    """`strict_when_perfect` used to key on the baseline's *median*, so a 4-of-5
+    baseline -- median 1.0, but not actually perfect -- was treated as if it had
+    never failed. A check with the same one-in-a-few failure rate then read as
+    "was passing every baseline sample, now failing", which is false: the
+    baseline was already flaky, and `signals/structural.py`'s own stated design
+    is that a band should accommodate that rather than page on it.
+    """
+    baseline = ['{"total": 1}', '{"total": 1}', '{"total": 1}', '{"total": 1}', "not json"]
+    current = ['{"total": 1}', '{"total": 1}', "not json"]
+    verdict = run(signals_for, baseline, current, ["valid_json"])
+
+    valid_json = next(s for s in verdict.signals if s.signal == "valid_json")
+    assert valid_json.level is not Level.DRIFT
+    assert "every baseline sample" not in valid_json.detail
+
+
 def test_a_baseline_that_never_truncates_catches_one_that_does(signals_for):
     """`response_complete`, the same shape of proof as the one above for
     `valid_json`: this is not a statistical question, so a baseline of five
@@ -212,6 +229,31 @@ def test_a_baseline_that_never_truncates_catches_one_that_does(signals_for):
     assert verdict.level is Level.DRIFT
     moved = {s.signal for s in verdict.moved}
     assert "response_complete" in moved
+
+
+def test_a_baseline_that_truncated_once_is_not_held_to_perfection(signals_for):
+    """Same shape as the `valid_json` case above: a baseline that truncated once
+    in five has a `response_complete` median of 1.0 but was not perfect, and
+    must not be reported as "never truncated" against a check with the same
+    rate of truncation.
+    """
+    baseline = [sample("done.", finish_reason="stop")] * 4 + [
+        sample("cut of", finish_reason="length")
+    ]
+    current = [sample("done.", finish_reason="stop")] * 2 + [
+        sample("cut of", finish_reason="length")
+    ]
+    verdict = compare_probe(
+        probe_id="essay",
+        target_name="prod",
+        signals=signals_for(),
+        baseline=baseline,
+        current=current,
+        cfg=BandConfig(),
+    )
+    rc = next(s for s in verdict.signals if s.signal == "response_complete")
+    assert rc.level is not Level.DRIFT
+    assert "every baseline sample" not in rc.detail
 
 
 # --- 5. Fingerprint change -----------------------------------------------
