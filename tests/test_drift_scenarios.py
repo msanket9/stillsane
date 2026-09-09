@@ -372,6 +372,65 @@ def test_argument_shape_change_is_drift(signals_for):
     assert tool.level is Level.DRIFT
 
 
+def test_an_agent_that_starts_calling_a_tool_is_drift(signals_for):
+    """The reverse of `test_agent_stopping_a_tool_call_is_drift`, and the one
+    this module's own docstring called invisible: a baseline with no tool calls
+    at all leaves `tool_call_distance`'s within-baseline distances empty, so it
+    used to report "skipped: too few samples" -- PASS -- even though the
+    current run started calling a tool the baseline never did. Byte-identical
+    text meant nothing else in the probe caught it either.
+    """
+    verdict = compare_probe(
+        probe_id="agent",
+        target_name="prod",
+        signals=signals_for(None),
+        baseline=[sample("Looking that up for you.") for _ in range(5)],
+        current=[
+            sample("Looking that up for you.", tool_calls=[ToolCall("lookup_invoice", ("invoice_id",))])
+            for _ in range(3)
+        ],
+    )
+    tool = next(s for s in verdict.signals if s.signal == "tool_call_distance")
+    assert tool.level is Level.DRIFT
+    assert "did not apply at baseline" in tool.detail
+    assert verdict.level is Level.DRIFT
+
+
+def test_prose_baseline_that_starts_returning_json_is_drift(signals_for):
+    """Same shape of bug as the tool-call case, for `json_shape_distance`: a
+    baseline that never produced JSON has no within-baseline shape distances to
+    compare against, so a check run that suddenly does produce JSON used to be
+    reported as skipped rather than as the structural change it is.
+    """
+    verdict = compare_probe(
+        probe_id="extract_invoice",
+        target_name="prod",
+        signals=signals_for(None),
+        baseline=[sample("Just some prose, no JSON in it at all.") for _ in range(5)],
+        current=[sample('{"total": 1240.50, "due_date": "2026-07-01"}') for _ in range(3)],
+    )
+    shape = next(s for s in verdict.signals if s.signal == "json_shape_distance")
+    assert shape.level is Level.DRIFT
+    assert "did not apply at baseline" in shape.detail
+
+
+def test_a_genuinely_thin_baseline_still_skips_the_shape_signal(signals_for):
+    """The categorical fix above must not fire on the case it is not about: a
+    baseline too thin to form even one pair (a single sample) still reports the
+    honest "skipped", not a false positive.
+    """
+    verdict = compare_probe(
+        probe_id="extract_invoice",
+        target_name="prod",
+        signals=signals_for(None),
+        baseline=[sample('{"total": 1}')],
+        current=[sample('{"total": 2}') for _ in range(3)],
+    )
+    shape = next(s for s in verdict.signals if s.signal == "json_shape_distance")
+    assert shape.level is Level.PASS
+    assert "skipped" in shape.detail
+
+
 def test_non_agent_probe_skips_tool_signal(signals_for):
     verdict = run(signals_for, STABLE_JSON, STABLE_JSON[:3])
     assert not any(s.signal == "tool_call_distance" for s in verdict.signals)

@@ -304,6 +304,24 @@ def evaluate_pairwise(
     if not cross:
         return None  # Signal does not apply to this probe.
     if len(within) < 1:
+        # `within` is empty for two different reasons, and they are not the same
+        # finding. A baseline too thin to form any pair at all (fewer than two
+        # samples, or a signal not yet exercised by pooling) has genuinely
+        # learned nothing -- that is the "skipped" case below. But a baseline
+        # with real pairs where every one of them returned None from
+        # `distance()` means the signal did not apply to *any* baseline
+        # sample -- no tool calls, no JSON -- and `cross` being non-empty means
+        # it applies now. That is not thin evidence; it is the categorical
+        # event this signal exists to catch (an agent that started calling a
+        # tool, a probe that started returning JSON), and reporting it as a
+        # skipped variance check let it pass silently.
+        if len(baseline) >= 2:
+            return SignalVerdict(
+                signal=signal.name,
+                kind=SignalKind.PAIRWISE,
+                level=signal.max_level,
+                detail="signal did not apply at baseline and does now",
+            )
         return SignalVerdict(
             signal=signal.name,
             kind=SignalKind.PAIRWISE,
