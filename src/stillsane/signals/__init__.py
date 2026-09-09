@@ -108,7 +108,13 @@ def build_signals(
             if value not in (None, "auto"):
                 semantic.band_override = float(value)
         elif name == "max_length":
+            # A second, independent signal, not an override of the always-on
+            # `length_chars` -- that one keeps its own learned two-sided band.
+            # Sharing the name `length_chars` produced two entries under one
+            # key: two report rows, two history rows per run, and `calibrate`
+            # silently merging both into a single misleading line.
             length = LengthChars()
+            length.name = "max_length"
             length.band_override = float(value)
             signals.append(length)
         else:

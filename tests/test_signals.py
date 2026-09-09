@@ -212,6 +212,20 @@ def test_watch_fingerprint_defaults_to_true(embedder):
     assert "fingerprint" in names
 
 
+def test_max_length_does_not_duplicate_the_always_on_length_signal(embedder):
+    """`max_length` used to append a second `LengthChars` while leaving its name
+    as `length_chars`, so a probe with the check got two signals sharing one
+    name -- two report rows, two history rows per run, and `calibrate` merging
+    both into one misleading line. The capped signal must carry its own name.
+    """
+    names = [s.name for s in build_signals([{"max_length": 2000}], embedder)]
+    assert names.count("length_chars") == 1
+    assert names.count("max_length") == 1
+
+    capped = next(s for s in build_signals([{"max_length": 2000}], embedder) if s.name == "max_length")
+    assert capped.band_override == 2000.0
+
+
 def test_semantic_threshold_can_be_pinned(embedder):
     signals = build_signals([{"semantic_similarity": 0.2}], embedder)
     semantic = next(s for s in signals if s.name == "semantic_distance")
