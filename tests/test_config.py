@@ -238,6 +238,30 @@ def test_response_path_does_not_touch_a_non_http_targets_hash():
     assert config_hash(probe, same_after_upgrade) == before
 
 
+def test_changing_headers_invalidates_the_baseline():
+    """A header can select which backend answers -- the README's own `type:
+    http` example carries `x-tenant: acme` -- so editing one must not be
+    silently compared against a baseline captured under a different value.
+    """
+    probe = ProbeConfig(id="p", prompt="base prompt")
+    a = TargetConfig(name="t", type="http", base_url="https://x", body={"q": "{{prompt}}"},
+                      headers={"x-tenant": "acme"})
+    b = TargetConfig(name="t", type="http", base_url="https://x", body={"q": "{{prompt}}"},
+                      headers={"x-tenant": "beta"})
+    assert config_hash(probe, a) != config_hash(probe, b)
+
+
+def test_headers_are_part_of_every_targets_hash_not_just_http():
+    """Unlike `response_path`/`method`, `headers` applies to every target
+    type, so it belongs in the always-present part of `identity()`.
+    """
+    probe, prod = _pair()
+    other = TargetConfig(
+        name="prod", base_url="https://a/v1", model="m", headers={"x-tenant": "acme"}
+    )
+    assert config_hash(probe, prod) != config_hash(probe, other)
+
+
 # --- Per-type validation ----------------------------------------------------
 
 

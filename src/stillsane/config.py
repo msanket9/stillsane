@@ -136,6 +136,16 @@ class TargetConfig(BaseModel):
         gets extracted and compared without touching the hash, so a check kept
         comparing the new extraction against a baseline captured with the old
         one and could report provider drift for a change made locally.
+
+        `headers` is included for the same reason. It is not a type-specific
+        field like the ones above -- it applies to every target type -- but it
+        can just as easily select which backend answers: the README's own
+        `type: http` example carries `x-tenant: acme`, and editing that value
+        used to leave the hash untouched, so a check would happily compare a
+        different tenant's responses against the old tenant's baseline.
+        Secrets never belong here (that is what `api_key_env` is for), so
+        unlike a body or path there is no incidental value to worry about
+        catching in the hash.
         """
         out: dict[str, Any] = {
             "type": self.type,
@@ -145,6 +155,7 @@ class TargetConfig(BaseModel):
             "max_tokens": self.max_tokens,
             "body": self.body,
             "path": self.path,
+            "headers": self.headers,
         }
         if self.type == "claude_code":
             out["claude_command"] = self.claude_command
