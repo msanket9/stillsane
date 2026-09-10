@@ -147,13 +147,14 @@ class History:
 
     def probe_results(
         self, limit_runs: int = 50
-    ) -> list[tuple[str, str, str, str, str, str | None]]:
-        """(finished, run_id, probe_id, target, level, detail), newest runs first.
+    ) -> list[tuple[str, str, str, str, str, str, str | None]]:
+        """(finished, run_id, probe_id, target, signal, level, detail), newest runs first.
 
         Per signal rather than per probe, because the caller needs the `transport`
         rows specifically: an unreachable endpoint and a drifting one both end a run
-        early, and only the detail says which happened. Aggregating to a probe level
-        here would throw that away.
+        early, and only `signal` says which happened -- `detail` alone can't be
+        matched reliably, and a probe-level aggregate would throw the distinction
+        away before the caller ever saw it.
 
         The run limit is applied to *runs* rather than to rows, since a row cap
         would silently truncate a run's probes and make a healthy run look partial.
@@ -161,7 +162,7 @@ class History:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT runs.finished, results.run_id, results.probe_id, results.target, "
-                "results.level, results.detail "
+                "results.signal, results.level, results.detail "
                 "FROM results JOIN runs USING (run_id) "
                 "WHERE results.run_id IN ("
                 "  SELECT run_id FROM runs ORDER BY started DESC, rowid DESC LIMIT ?"
@@ -170,7 +171,7 @@ class History:
                 "ORDER BY runs.started DESC, results.rowid DESC",
                 (limit_runs,),
             ).fetchall()
-        return [(r[0], r[1], r[2], r[3], r[4], r[5]) for r in rows]
+        return [(r[0], r[1], r[2], r[3], r[4], r[5], r[6]) for r in rows]
 
     def clean_z(self, limit_runs: int = 200) -> list[tuple[str, str, str, float]]:
         """(probe_id, target, signal, z) for every signal of every clean run.

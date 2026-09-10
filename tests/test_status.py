@@ -29,7 +29,7 @@ def run(run_id: str, hours_ago: float, level: str, retries: int = 0):
 
 def result(run_id: str, hours_ago: float, probe: str, level: str, signal="semantic_distance",
            detail=None):
-    return (ts(hours_ago), run_id, probe, "claude", level, detail)
+    return (ts(hours_ago), run_id, probe, "claude", signal, level, detail)
 
 
 def build(runs, results, **kw):
@@ -100,6 +100,49 @@ def test_transport_errors_are_counted_and_named_as_environment():
     text = render(status)
     assert "transport errors rather than drift" in text
     assert "environment problem, not a model one" in text
+
+
+def test_a_stale_baseline_error_is_not_reported_as_a_transport_problem():
+    """`status.py` used to call every ERROR run a transport error, regardless of
+    what actually failed. A stale-hash or missing-baseline error never touches
+    the network -- it is a config/workflow problem, and telling the reader it
+    is "an environment problem, not a model one" sends them chasing a network
+    issue that does not exist.
+    """
+    status = build(
+        [run("r1", 1, "error")],
+        [
+            result(
+                "r1", 1, "p", "error", signal="baseline",
+                detail="baseline v1 was captured under a different prompt, model, "
+                "check set or embedder; run `stillsane baseline` to recapture",
+            ),
+        ],
+    )
+    assert status.error_runs == 1
+    assert status.transport_error_runs == 0
+    assert status.other_error_runs == 1
+    text = render(status)
+    assert "transport errors rather than drift" not in text
+    assert "environment problem, not a model one" not in text
+    assert "not a transport failure" in text
+    assert "stillsane baseline" in text or "the config" in text
+
+
+def test_a_mix_of_transport_and_other_errors_reports_both():
+    status = build(
+        [run("r2", 1, "error"), run("r1", 2, "error")],
+        [
+            result("r2", 1, "p", "error", signal="transport", detail="timeout after 60.0s"),
+            result("r1", 2, "p", "error", signal="baseline", detail="no baseline captured yet"),
+        ],
+    )
+    assert status.error_runs == 2
+    assert status.transport_error_runs == 1
+    assert status.other_error_runs == 1
+    text = render(status)
+    assert "1 of the last 2 run(s) ended in transport errors" in text
+    assert "1 of the last 2 run(s) ended in an error that was not a transport failure" in text
 
 
 def test_error_reasons_are_surfaced_because_they_are_the_diagnosis():
@@ -242,6 +285,20 @@ def test_payload_carries_the_health_verdict():
     assert data["error_runs"] == 1
     assert data["expect_every_s"] == 86400
     assert data["probes"][0]["reasons"] == ["timeout after 60.0s"]
+
+
+def test_payload_splits_transport_from_other_errors():
+    status = build(
+        [run("r2", 1, "error"), run("r1", 25, "pass")],
+        [
+            result("r2", 1, "p", "error", signal="baseline", detail="no baseline captured yet"),
+            result("r1", 25, "p", "pass"),
+        ],
+    )
+    data = payload(status)
+    assert data["error_runs"] == 1
+    assert data["transport_error_runs"] == 0
+    assert data["other_error_runs"] == 1
 
 
 def test_json_round_trips():

@@ -131,6 +131,12 @@ class Status:
     #: only passed because a dropped connection was retried is still a run against an
     #: unwell environment, so this is reported rather than absorbed.
     total_retries: int = 0
+    #: Of `error_runs`, how many ended purely in a transport failure -- unreachable
+    #: endpoint, timeout, malformed response. The rest (`error_runs -
+    #: transport_error_runs`) are setup problems -- a missing or stale baseline, a
+    #: bad config -- which is a different diagnosis and a different fix, and must
+    #: not be told to the reader as "check your network".
+    transport_error_runs: int = 0
 
     @property
     def last_run(self) -> datetime | None:
@@ -147,6 +153,16 @@ class Status:
     @property
     def error_runs(self) -> int:
         return sum(1 for _, level in self.outcomes if level == Level.ERROR.value)
+
+    @property
+    def other_error_runs(self) -> int:
+        """Error runs that were not (purely) transport failures.
+
+        A stale baseline, a missing one, or a config that no longer matches the
+        code -- none of these reached the endpoint, so none of them measured
+        anything, but none of them are "your network is down" either.
+        """
+        return self.error_runs - self.transport_error_runs
 
     @property
     def silent_for(self) -> timedelta | None:
@@ -169,7 +185,7 @@ class Status:
 
 def assess(
     runs: Sequence[tuple[str, str, str, int]],
-    probe_rows: Sequence[tuple[str, str, str, str, str, str | None]],
+    probe_rows: Sequence[tuple[str, str, str, str, str, str, str | None]],
     *,
     now: datetime | None = None,
     expect_every_s: float | None = None,
@@ -191,7 +207,12 @@ def assess(
     # latest timestamp, latest level and most recent failure reasons all fall out of
     # "have I seen this probe yet".
     seen: dict[tuple[str, str], dict] = {}
-    for finished, run_id, probe_id, target, level, detail in probe_rows:
+    # Which signal(s) errored, per run. A run counts as a transport error only if
+    # every one of its error rows was `transport`; a run where even one probe
+    # failed for another reason (a stale or missing baseline, a bad config) is a
+    # different diagnosis and must not be reported as "the network is down".
+    error_signals: dict[str, set[str]] = {}
+    for finished, run_id, probe_id, target, signal, level, detail in probe_rows:
         key = (probe_id, target)
         entry = seen.setdefault(
             key,
@@ -211,9 +232,14 @@ def assess(
 
         if level == Level.ERROR.value:
             entry["errors"].add(run_id)
+            error_signals.setdefault(run_id, set()).add(signal)
             reason = (detail or "").strip()
             if reason and reason not in entry["reasons"]:
                 entry["reasons"].append(reason)
+
+    transport_error_runs = sum(
+        1 for signals in error_signals.values() if signals == {"transport"}
+    )
 
     probes = [
         ProbeHealth(
@@ -235,6 +261,7 @@ def assess(
         probes=probes,
         now=now,
         expect_every_s=expect_every_s,
+        transport_error_runs=transport_error_runs,
     )
 
 
@@ -297,12 +324,26 @@ def render(status: Status, limit: int = 20) -> str:
         )
     elif status.error_runs:
         # Worth saying plainly, because the exit code alone gets read as "the model
-        # broke" by anyone who has not memorised the table.
-        lines += wrap(
-            f"{status.error_runs} of the last {len(status.outcomes)} run(s) ended in "
-            "transport errors rather than drift. Nothing was measured on those runs. "
-            "That is an environment problem, not a model one."
-        )
+        # broke" by anyone who has not memorised the table. But an unreachable
+        # endpoint and a stale baseline are different diagnoses with different
+        # fixes, and calling both "an environment problem" sent people looking at
+        # their network for a config mistake `check` would have named outright.
+        if status.transport_error_runs:
+            lines += wrap(
+                f"{status.transport_error_runs} of the last {len(status.outcomes)} "
+                "run(s) ended in transport errors rather than drift. Nothing was "
+                "measured on those runs. That is an environment problem, not a "
+                "model one."
+            )
+        if status.other_error_runs:
+            lines += wrap(
+                f"{status.other_error_runs} of the last {len(status.outcomes)} "
+                "run(s) ended in an error that was not a transport failure -- a "
+                "missing or stale baseline, or an invalid config. Nothing was "
+                "measured on those runs either, but the fix is `stillsane baseline` "
+                "or the config, not the network. Run `stillsane check` to see what "
+                "each one says."
+            )
     elif status.healthy:
         lines.append("Canary looks healthy.")
 
@@ -336,6 +377,8 @@ def payload(status: Status) -> dict:
         "overdue": status.overdue,
         "total_runs": status.total_runs,
         "error_runs": status.error_runs,
+        "transport_error_runs": status.transport_error_runs,
+        "other_error_runs": status.other_error_runs,
         "total_retries": status.total_retries,
         "last_run": status.last_run.isoformat() if status.last_run else None,
         "last_clean_run": status.last_clean.isoformat() if status.last_clean else None,
