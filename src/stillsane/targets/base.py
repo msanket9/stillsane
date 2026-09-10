@@ -227,11 +227,19 @@ async def collect(
     n: int,
     concurrency: int = DEFAULT_CONCURRENCY,
     client: httpx.AsyncClient | None = None,
+    semaphore: asyncio.Semaphore | None = None,
 ) -> list[Sample]:
-    """Take `n` samples of one probe against one target."""
+    """Take `n` samples of one probe against one target.
+
+    `semaphore`, when given, overrides `concurrency`: it lets a caller running
+    several `collect`s concurrently against the *same* target share one limit
+    across all of them, rather than each call capping itself independently and
+    the target seeing the sum. Callers that pass nothing still get a private
+    semaphore sized `concurrency`, so calling `collect` on its own is unchanged.
+    """
     owned = client is None
     client = client or httpx.AsyncClient()
-    limit = asyncio.Semaphore(concurrency)
+    limit = semaphore if semaphore is not None else asyncio.Semaphore(concurrency)
 
     async def one() -> Sample:
         async with limit:

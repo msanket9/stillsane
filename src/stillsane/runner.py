@@ -37,7 +37,7 @@ from .models import Direction, Level, ProbeVerdict, RunResult, Sample, SignalVer
 from .signals import build_signals, default_embedder
 from .signals.base import PairwiseSignal, PointwiseSignal, Signal
 from .store import Baseline, BaselineStore, History
-from .targets import Target, build_target, collect
+from .targets import DEFAULT_CONCURRENCY, Target, build_target, collect
 
 
 @dataclass
@@ -76,11 +76,27 @@ async def _sample_all(
 ) -> list[list[Sample]]:
     owned = client is None
     client = client or httpx.AsyncClient()
+    # One semaphore per target, shared across every plan that points at it.
+    # `collect` used to cap concurrency per call, and every plan's `collect`
+    # runs concurrently here -- so N probes against one target opened up to
+    # `DEFAULT_CONCURRENCY * N` requests in flight, exactly the outage this cap
+    # exists to prevent (see the module docstring in targets/base.py).
+    semaphores: dict[str, asyncio.Semaphore] = {}
+    for plan in plans:
+        semaphores.setdefault(
+            plan.target_config.name, asyncio.Semaphore(DEFAULT_CONCURRENCY)
+        )
     try:
         return list(
             await asyncio.gather(
                 *(
-                    collect(plan.target, plan.probe, n, client=client)
+                    collect(
+                        plan.target,
+                        plan.probe,
+                        n,
+                        client=client,
+                        semaphore=semaphores[plan.target_config.name],
+                    )
                     for plan, n in zip(plans, counts, strict=True)
                 )
             )

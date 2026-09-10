@@ -101,6 +101,60 @@ def run_check(config, store, history, texts, fingerprint="fp_a4f2b1"):
     return asyncio.run(go())
 
 
+# --- Concurrency -----------------------------------------------------------
+
+
+def test_concurrency_is_shared_across_probes_against_one_target(tmp_path):
+    """`collect` used to open a fresh semaphore per call, and every probe's
+    `collect` runs concurrently in `_sample_all` -- so N probes against one
+    target opened up to `DEFAULT_CONCURRENCY * N` requests in flight against
+    that one endpoint, which is exactly the rate-limit outage the cap exists to
+    prevent (see the module docstring in `targets/base.py`).
+    """
+    from stillsane.targets import DEFAULT_CONCURRENCY
+
+    config = Config.model_validate(
+        {
+            "embedder": "hashing",
+            "targets": [{"name": "prod", "base_url": "https://api.example.com/v1", "model": "m"}],
+            "probes": [
+                {"id": f"p{i}", "prompt": f"prompt {i}", "baseline_samples": 10, "check_samples": 3}
+                for i in range(3)
+            ],
+        }
+    )
+    store = BaselineStore(tmp_path)
+
+    in_flight = 0
+    max_in_flight = 0
+    lock = asyncio.Lock()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal in_flight, max_in_flight
+        async with lock:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.01)
+        async with lock:
+            in_flight -= 1
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            },
+        )
+
+    async def go():
+        async with _RealAsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await capture_baseline(config, store, client=client)
+
+    asyncio.run(go())
+    assert max_in_flight <= DEFAULT_CONCURRENCY, (
+        f"{max_in_flight} requests in flight against one target, "
+        f"cap is {DEFAULT_CONCURRENCY}"
+    )
+
+
 # --- The happy path -------------------------------------------------------
 
 
