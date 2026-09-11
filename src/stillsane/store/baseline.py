@@ -24,7 +24,10 @@ Layout, chosen so it survives being read by a human at 3am with `cat`:
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +36,28 @@ from ..compare.pooling import Anchor
 from ..models import Sample
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """Write `content` to `path` so a reader never sees a partial file.
+
+    `variance.json` is rewritten on every clean check, and a crash or kill
+    mid-write leaves whatever `write_text` had flushed so far -- often
+    truncated, invalid JSON that `load` then raises on for every future check,
+    with no way back short of deleting the baseline by hand. Writing to a
+    sibling temp file first and `os.replace`-ing it into place is atomic on
+    the same filesystem: the old content survives intact until the new
+    content is fully written, so a crash mid-write loses only the write in
+    progress, never the file itself.
+
+    The temp name carries a random suffix rather than a fixed one so two
+    writers racing for the same path (`update_variance` runs outside the
+    version-claiming lock `save` uses) don't stomp each other's temp file
+    before either gets to `replace`.
+    """
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+    tmp.write_text(content)
+    os.replace(tmp, path)
 
 
 def slug(value: str) -> str:
@@ -138,25 +163,50 @@ class BaselineStore:
     ) -> Baseline:
         """Write a new baseline version. Never overwrites an existing one.
 
-        Claims the version directory with a plain `mkdir(exist_ok=False)` rather
-        than trusting `latest_version` + 1, because that read-then-write is a
-        race: two `stillsane baseline` processes racing for the same target/probe
-        (a double-launched cron job, or a person re-running while an earlier
-        invocation is still in flight) can both read the same `latest_version`,
-        both compute the same next number, and both write into the same
-        directory -- `mkdir(..., exist_ok=True)` let that through silently,
-        losing every write but one with no error anywhere. `mkdir` on a single
-        path is atomic at the OS level, so the loser here gets `FileExistsError`
-        and retries at the next number instead of overwriting the winner.
+        Claims the version number with a plain `mkdir(exist_ok=False)` on a
+        *staging* directory rather than trusting `latest_version` + 1, because
+        that read-then-write is a race: two `stillsane baseline` processes
+        racing for the same target/probe (a double-launched cron job, or a
+        person re-running while an earlier invocation is still in flight) can
+        both read the same `latest_version`, both compute the same next
+        number, and both write into the same directory -- `mkdir(...,
+        exist_ok=True)` let that through silently, losing every write but one
+        with no error anywhere. `mkdir` on a single path is atomic at the OS
+        level, so the loser here gets `FileExistsError` and retries at the
+        next number instead of overwriting the winner.
+
+        The directory is populated in that staging location and only made
+        visible as `vN` by a single `os.replace` once every file in it is
+        written. `versions()` (and so `latest_version()`) only recognises a
+        `vN`-named directory, so a version being written is invisible to it
+        the whole time -- a crash mid-write leaves an orphaned staging
+        directory, not a `vN` that looks real but is not. Without this, a
+        crash partway through leaves a half-written `vN` that `latest_version`
+        prefers over a perfectly good `vN-1` forever, since it always takes
+        the highest number that exists, complete or not.
         """
         version = (self.latest_version(target_name, probe_id) or 0) + 1
+        base_dir = self._dir(target_name, probe_id)
         while True:
-            path = self._dir(target_name, probe_id) / f"v{version}"
+            path = base_dir / f"v{version}"
+            staging = base_dir / f".v{version}.tmp"
             try:
-                path.mkdir(parents=True, exist_ok=False)
-                break
+                staging.mkdir(parents=True, exist_ok=False)
             except FileExistsError:
                 version += 1
+                continue
+            if path.exists():
+                # `vN` is already published -- either a genuinely stale
+                # `latest_version` (a version landed between when we read it
+                # and now), or, in the test that pins `latest_version` to
+                # force a race, a caller re-targeting a number a previous
+                # `save()` already claimed and finished. Our exclusive hold on
+                # the staging name for this number does not extend to the
+                # published name, so re-check it before committing to it.
+                staging.rmdir()
+                version += 1
+                continue
+            break
 
         usable = [s for s in samples if s.ok]
         created = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -172,7 +222,12 @@ class BaselineStore:
             model_id=next((s.model_id for s in usable if s.model_id), None),
             fingerprint=next((s.fingerprint for s in usable if s.fingerprint), None),
         )
-        self._write(path, baseline)
+        try:
+            self._write(staging, baseline)
+            os.replace(staging, path)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
         return baseline
 
     def update_variance(
@@ -191,7 +246,8 @@ class BaselineStore:
         self._write_variance(path, baseline)
 
     def _write(self, path: Path, baseline: Baseline) -> None:
-        (path / "meta.json").write_text(
+        _atomic_write(
+            path / "meta.json",
             json.dumps(
                 {
                     "created": baseline.created,
@@ -204,15 +260,17 @@ class BaselineStore:
                 },
                 indent=2,
             )
-            + "\n"
+            + "\n",
         )
-        with (path / "samples.jsonl").open("w") as fh:
-            for sample in baseline.samples:
-                fh.write(json.dumps(sample.to_dict()) + "\n")
+        _atomic_write(
+            path / "samples.jsonl",
+            "".join(json.dumps(sample.to_dict()) + "\n" for sample in baseline.samples),
+        )
         self._write_variance(path, baseline)
 
     def _write_variance(self, path: Path, baseline: Baseline) -> None:
-        (path / "variance.json").write_text(
+        _atomic_write(
+            path / "variance.json",
             json.dumps(
                 {
                     "pooled": baseline.pooled,
@@ -223,7 +281,7 @@ class BaselineStore:
                 },
                 indent=2,
             )
-            + "\n"
+            + "\n",
         )
 
 

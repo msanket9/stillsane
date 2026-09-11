@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from conftest import sample
 
+import stillsane.store.baseline as baseline_module
 from stillsane.compare import Anchor
 from stillsane.models import Level, ProbeVerdict, RunResult, SignalVerdict
 from stillsane.store import BaselineStore, History, slug
@@ -50,6 +53,60 @@ def test_concurrent_saves_do_not_clobber_each_other(tmp_path, monkeypatch):
     assert {a.version, b.version} == {1, 2}
     assert store.load("prod", "p", version=a.version).samples[0].text == "first"
     assert store.load("prod", "p", version=b.version).samples[0].text == "second"
+
+
+def test_a_crash_partway_through_save_does_not_shadow_the_prior_version(tmp_path, monkeypatch):
+    """`save()` used to populate `vN` in place: `path.mkdir()` made it visible
+    immediately, and a crash partway through `_write` (a missing API key is
+    not the concern here -- a kill, a power loss, an out-of-disk mid-JSON) left
+    a half-written `vN` on disk. `latest_version` always prefers the highest
+    number that exists, complete or not, so that half-written version shadowed
+    a perfectly good `vN-1` forever, with no way back short of deleting the
+    directory by hand.
+    """
+    store = BaselineStore(tmp_path)
+    store.save("prod", "p", [sample("v1 good")], "hash1")
+
+    def crashes_partway(path, baseline):
+        (path / "meta.json").write_text('{"created": "x"}')
+        raise RuntimeError("simulated crash mid-write")
+
+    monkeypatch.setattr(store, "_write", crashes_partway)
+    with contextlib.suppress(RuntimeError):
+        store.save("prod", "p", [sample("v2 crashed")], "hash2")
+
+    # The crash must not leave a `v2` directory behind at all -- neither a
+    # half-written one nor an empty placeholder -- and `v1` must still be
+    # exactly what it was.
+    assert store.versions("prod", "p") == [1]
+    assert store.latest_version("prod", "p") == 1
+    loaded = store.load("prod", "p")
+    assert loaded is not None
+    assert loaded.version == 1
+    assert loaded.samples[0].text == "v1 good"
+
+
+def test_a_crash_mid_variance_update_leaves_the_old_pool_intact(tmp_path, monkeypatch):
+    """`update_variance` rewrites `variance.json` on every clean check. A crash
+    or kill mid-write used to leave whatever `write_text` had flushed so far --
+    often truncated, invalid JSON -- so `load` raised on every subsequent
+    `check` with no way back short of deleting the baseline by hand.
+    """
+    store = BaselineStore(tmp_path)
+    store.save("prod", "p", [sample("x")], "hash1",
+               pooled={"semantic_distance": [0.1, 0.11]})
+    baseline = store.load("prod", "p")
+
+    def crashes_mid_write(path, content):
+        path.with_name(f"{path.name}.orphan.tmp").write_text(content[: len(content) // 2])
+        raise RuntimeError("simulated crash mid-write")
+
+    monkeypatch.setattr(baseline_module, "_atomic_write", crashes_mid_write)
+    with contextlib.suppress(RuntimeError):
+        store.update_variance(baseline, {"semantic_distance": [9.9, 9.9]}, {})
+
+    reloaded = store.load("prod", "p")
+    assert reloaded.pooled["semantic_distance"] == [0.1, 0.11]
 
 
 def test_round_trip_preserves_everything_compared(tmp_path):
