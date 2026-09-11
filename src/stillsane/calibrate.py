@@ -52,6 +52,13 @@ class SignalCalibration:
     n: int
     z_max_abs: float
     z_p95_abs: float
+    #: Did the raw observed value ever differ from the band's centre on a clean
+    #: run, even though `z_max_abs` is 0? `z_score` clamps a one-sided signal to
+    #: 0 whenever it moves in the safe direction (a latency that got faster),
+    #: so `z_max_abs == 0` alone cannot tell "this never varies" apart from
+    #: "this varies plenty, always safely" -- and reporting the second as
+    #: "never moved" tells the reader the wrong one of those two facts.
+    moved_only_safely: bool = False
 
     @property
     def label(self) -> str:
@@ -60,8 +67,13 @@ class SignalCalibration:
     def headroom(self, warn_k: float) -> float | None:
         """How many times further the worst clean run would have had to go to fire.
 
-        None when the observed maximum is zero, which is not headroom of infinity
-        so much as a signal that never moved at all.
+        None when the observed maximum is zero. That is not headroom of
+        infinity -- there is no number of "times further" a signal that cannot
+        fire would need to go -- whether because it never moved, or because
+        every move it made was in the direction nobody alerts on. `render`
+        distinguishes those two cases via `moved_only_safely` rather than here,
+        since this method answers "how much fire-risk headroom is there",
+        and the answer is the same (none) either way.
         """
         return None if self.z_max_abs <= 0 else warn_k / self.z_max_abs
 
@@ -121,8 +133,13 @@ class Calibration:
                 for label, rows in ordered]
 
 
+#: Below this, a difference between `observed` and `baseline` is float noise
+#: from serialisation/reconstruction rather than a real move worth reporting.
+_MOVED_EPS = 1e-9
+
+
 def assess(
-    rows: Sequence[tuple[str, str, str, float]],
+    rows: Sequence[tuple[str, str, str, float, float | None, float | None]],
     *,
     clean_runs: int,
     warn_k: float,
@@ -137,22 +154,30 @@ def assess(
     not need a database on disk to exercise.
     """
     by_key: dict[tuple[str, str, str], list[float]] = {}
+    moved_raw: dict[tuple[str, str, str], bool] = {}
     probes: set[str] = set()
-    for probe_id, target, signal, z in rows:
-        by_key.setdefault((probe_id, target, signal), []).append(abs(z))
+    for probe_id, target, signal, z, observed, baseline in rows:
+        key = (probe_id, target, signal)
+        by_key.setdefault(key, []).append(abs(z))
+        if observed is not None and baseline is not None:
+            moved_raw[key] = moved_raw.get(key, False) or abs(observed - baseline) > _MOVED_EPS
         probes.add(f"{probe_id} @ {target}")
 
     signals = []
     for (probe_id, target, signal), values in sorted(by_key.items()):
         arr = np.asarray(values, dtype=float)
+        z_max_abs = float(arr.max())
         signals.append(
             SignalCalibration(
                 probe_id=probe_id,
                 target=target,
                 signal=signal,
                 n=len(arr),
-                z_max_abs=float(arr.max()),
+                z_max_abs=z_max_abs,
                 z_p95_abs=float(np.percentile(arr, 95)),
+                moved_only_safely=(
+                    z_max_abs <= 0 and moved_raw.get((probe_id, target, signal), False)
+                ),
             )
         )
     signals.sort(key=lambda s: s.z_max_abs, reverse=True)
@@ -192,7 +217,12 @@ def render(cal: Calibration) -> str:
         lines.append(f"  {'signal':<24}{'n':>5}{'|z| p95':>10}{'|z| max':>10}{'headroom':>14}")
         for s in rows:
             head = s.headroom(cal.warn_k)
-            head_s = "never moved" if head is None else f"{head:.1f}x"
+            if head is not None:
+                head_s = f"{head:.1f}x"
+            elif s.moved_only_safely:
+                head_s = "safe only"
+            else:
+                head_s = "never moved"
             lines.append(
                 f"  {s.signal:<24}{s.n:>5}{s.z_p95_abs:>10.2f}{s.z_max_abs:>10.2f}{head_s:>14}"
             )
@@ -206,16 +236,31 @@ def render(cal: Calibration) -> str:
             "warnings, and the threshold is too tight for these probes."
         )
     elif cal.tightest_k is None:
-        # Every signal sat exactly on its centre on every clean run. That is not
-        # enormous headroom, it is an absence of measurement: nothing has yet
-        # demonstrated that these probes vary at all, so there is no evidence about
-        # where a threshold should sit.
-        lines += _wrap(
-            "No signal moved at all on any clean run, so there is nothing to measure "
-            "headroom against. That is not a verdict that the thresholds are safe, it "
-            "is an absence of evidence either way. Check `stillsane bands` for whether "
-            "these probes have measurable variance in the first place."
-        )
+        safe_movers = [s for s in cal.signals if s.moved_only_safely]
+        if safe_movers:
+            # These did move -- `z_max_abs` is 0 only because every move was in
+            # the direction nobody alerts on (a latency that got faster). That
+            # is a real fact about the probe, not an absence of one, and it is
+            # a different finding from a signal that is truly constant.
+            names = ", ".join(f"{s.signal} on {s.label}" for s in safe_movers)
+            lines += _wrap(
+                f"No signal crossed centre on any clean run, but {names} did move -- "
+                "always in the direction nobody alerts on (e.g. a latency that got "
+                "faster). There is still no evidence here about how close the "
+                "thresholds are to firing; check `stillsane history` for what these "
+                "signals actually did."
+            )
+        else:
+            # Every signal sat exactly on its centre on every clean run. That is not
+            # enormous headroom, it is an absence of measurement: nothing has yet
+            # demonstrated that these probes vary at all, so there is no evidence
+            # about where a threshold should sit.
+            lines += _wrap(
+                "No signal moved at all on any clean run, so there is nothing to measure "
+                "headroom against. That is not a verdict that the thresholds are safe, it "
+                "is an absence of evidence either way. Check `stillsane bands` for whether "
+                "these probes have measurable variance in the first place."
+            )
     else:
         worst = cal.worst
         lines += _wrap(
@@ -278,6 +323,7 @@ def payload(cal: Calibration) -> dict:
                 "headroom": (
                     None if s.headroom(cal.warn_k) is None else round(s.headroom(cal.warn_k), 3)
                 ),
+                "moved_only_safely": s.moved_only_safely,
             }
             for s in cal.signals
         ],

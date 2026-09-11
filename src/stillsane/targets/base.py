@@ -129,9 +129,20 @@ class Target(ABC):
         headers = {"content-type": "application/json", **self.config.headers}
         key = self.config.api_key()
         if key:
-            headers.setdefault(
-                self.config.api_key_header.lower(), f"{self.config.api_key_prefix}{key}"
+            # HTTP header names are case-insensitive, but a plain dict key is
+            # not: `setdefault` on the lowercased name left a user-supplied
+            # `headers: {Authorization: ...}` sitting alongside a separately
+            # added `authorization`, and httpx sends both as distinct header
+            # lines -- the wire request carries two `Authorization` values
+            # rather than one, which most servers either reject or silently
+            # mangle into a single comma-joined, meaningless credential.
+            already_set = any(
+                name.lower() == self.config.api_key_header.lower() for name in headers
             )
+            if not already_set:
+                headers[self.config.api_key_header.lower()] = (
+                    f"{self.config.api_key_prefix}{key}"
+                )
         return headers
 
     async def call(self, probe: ProbeConfig, client: httpx.AsyncClient) -> Sample:

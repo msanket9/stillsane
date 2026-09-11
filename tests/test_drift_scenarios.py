@@ -483,3 +483,27 @@ def test_thin_baseline_cannot_fail_a_build(signals_for):
     assert verdict.level is Level.WARN
     semantic = next(s for s in verdict.signals if s.signal == "semantic_distance")
     assert "capped to warn" in semantic.detail
+
+
+def test_min_confident_n_counts_baseline_samples_not_pairs(signals_for):
+    """`min_confident_n` is documented as a count of baseline *samples*, and
+    that is what a pointwise signal compares it against. A pairwise signal
+    used to compare it against the number of *pairs* instead -- 6 for 4
+    samples -- so the same configured number meant two different things
+    depending on which kind of signal a probe happened to use. 4 samples is
+    below a `min_confident_n` of 5, but 6 pairs is not: the old code let a
+    4-sample baseline fail a build here, treating it as confident when the
+    user explicitly asked for 5.
+    """
+    cfg = BandConfig(min_confident_n=5, warn_k=0.1, drift_k=0.2)
+    verdict = compare_probe(
+        probe_id="extract_invoice",
+        target_name="prod",
+        signals=signals_for(None),
+        baseline=[sample(t) for t in CHATTY_BASELINE[:4]],
+        current=[sample(t) for t in CHATTY_DRIFTED],
+        cfg=cfg,
+    )
+    semantic = next(s for s in verdict.signals if s.signal == "semantic_distance")
+    assert semantic.level is Level.WARN
+    assert "band from only 4 samples, capped to warn" in semantic.detail

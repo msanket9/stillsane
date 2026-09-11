@@ -16,13 +16,23 @@ from stillsane.calibrate import THIN_EVIDENCE_RUNS, as_json, assess, payload, re
 
 
 def rows(*specs):
-    """(signal, z) pairs into the shape History returns, all on one probe."""
-    return [("probe", "target", signal, z) for signal, z in specs]
+    """(signal, z) pairs into the shape History returns, all on one probe.
+
+    `observed`/`baseline` are left `None` -- callers that need to exercise the
+    "moved only in the safe direction" distinction use `rows_with_raw` instead.
+    """
+    return [("probe", "target", signal, z, None, None) for signal, z in specs]
 
 
 def multi_rows(*specs):
     """(probe, signal, z) triples, for tests that need more than one probe."""
-    return [(probe, "target", signal, z) for probe, signal, z in specs]
+    return [(probe, "target", signal, z, None, None) for probe, signal, z in specs]
+
+
+def rows_with_raw(*specs):
+    """(signal, z, observed, baseline) quadruples, all on one probe."""
+    return [("probe", "target", signal, z, observed, baseline)
+            for signal, z, observed, baseline in specs]
 
 
 def flat(text: str) -> str:
@@ -74,6 +84,49 @@ def test_a_signal_that_never_moved_reports_no_headroom_rather_than_infinity():
     assert cal.signals[0].headroom(3.0) is None
     assert "never moved" in flat(render(cal))
     assert "absence of evidence" in flat(render(cal))
+
+
+def test_a_signal_that_only_ever_got_safely_faster_is_not_reported_as_never_moved():
+    """`z_score` clamps a one-sided signal to 0 whenever it moves in the safe
+    direction -- a latency that only ever got faster records `z=0.0` on every
+    clean run, identically to a signal that is genuinely constant. `z` alone
+    cannot tell those two apart, but `observed`/`baseline` can: a real move
+    away from the band centre, even a safe one, is a fact worth reporting
+    differently from "this never moves at all".
+    """
+    cal = assess(
+        rows_with_raw(
+            ("latency_ms", 0.0, 40.0, 120.0),
+            ("latency_ms", 0.0, 35.0, 120.0),
+        ),
+        clean_runs=20, warn_k=3.0, drift_k=6.0,
+        first="2026-08-04T00:00:00+00:00", last="2026-08-12T00:00:00+00:00",
+    )
+    sig = cal.signals[0]
+    assert sig.headroom(3.0) is None
+    assert sig.moved_only_safely is True
+
+    text = flat(render(cal))
+    assert "never moved" not in text
+    assert "did move" in text
+    assert "direction nobody alerts on" in text
+
+    data = payload(cal)
+    assert data["signals"][0]["moved_only_safely"] is True
+
+
+def test_a_genuinely_constant_signal_still_says_so():
+    """The counterpart: with no raw movement at all, "never moved" must still
+    be the honest label, not a casualty of the fix above.
+    """
+    cal = assess(
+        rows_with_raw(("latency_ms", 0.0, 120.0, 120.0), ("latency_ms", 0.0, 120.0, 120.0)),
+        clean_runs=20, warn_k=3.0, drift_k=6.0,
+        first="2026-08-04T00:00:00+00:00", last="2026-08-12T00:00:00+00:00",
+    )
+    sig = cal.signals[0]
+    assert sig.moved_only_safely is False
+    assert "never moved" in flat(render(cal))
 
 
 def test_tightest_k_is_the_worst_observed_value():

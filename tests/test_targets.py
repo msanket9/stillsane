@@ -158,6 +158,31 @@ def test_bearer_remains_the_default(monkeypatch):
     assert seen["authorization"] == "Bearer sk-secret"
 
 
+def test_a_user_header_matching_the_api_key_header_by_case_alone_is_not_duplicated(monkeypatch):
+    """`headers` is matched against `api_key_header` case-sensitively by a plain
+    dict key, but HTTP header names are not: `headers: {Authorization: ...}`
+    alongside the default `api_key_header: authorization` used to leave both
+    `Authorization` and `authorization` in the request, and httpx sends them as
+    two distinct header lines -- most servers either reject the duplicate or
+    collapse it into one comma-joined, meaningless credential.
+    """
+    monkeypatch.setenv("TEST_KEY", "sk-secret")
+    target = build_target(
+        TargetConfig(
+            name="t", base_url="https://x/v1", model="m", api_key_env="TEST_KEY",
+            headers={"Authorization": "Bearer user-supplied"},
+        )
+    )
+    seen = {}
+
+    def handler(request):
+        seen["auth_values"] = request.headers.get_list("authorization")
+        return httpx.Response(200, json=oai_body())
+
+    call(target, PROBE, handler)
+    assert seen["auth_values"] == ["Bearer user-supplied"]
+
+
 def test_tool_calls_are_normalised():
     body = oai_body(
         content=None,

@@ -391,8 +391,16 @@ def evaluate_pairwise(
     observed = float(np.median(cross))
     z = z_score(observed, band, Direction.UP_IS_BAD)
     p = mann_whitney_p(within, cross)
+    # `min_confident_n` is documented (`BandConfig.min_confident_n`) as a count
+    # of baseline *samples*, and that is what `evaluate_pointwise` compares it
+    # against. `within` is a count of *pairs* -- 10 for 5 samples -- so using
+    # `len(within)` here let the same configured number mean two different
+    # things depending on which kind of signal a probe happened to use, and
+    # the "band from only N samples" message was lying about the unit for
+    # every pairwise signal. `len(baseline)` is the quantity the docstring and
+    # the pointwise path both actually mean.
     level, note = _levels(
-        z, cfg, len(within), signal.max_level, p_value=p, floored=band.floored
+        z, cfg, len(baseline), signal.max_level, p_value=p, floored=band.floored
     )
 
     detail = f"{observed:.4g} vs normal {band.center:.4g} (band {band.describe()}){note}"

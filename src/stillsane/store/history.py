@@ -173,18 +173,30 @@ class History:
             ).fetchall()
         return [(r[0], r[1], r[2], r[3], r[4], r[5], r[6]) for r in rows]
 
-    def clean_z(self, limit_runs: int = 200) -> list[tuple[str, str, str, float]]:
-        """(probe_id, target, signal, z) for every signal of every clean run.
+    def clean_z(
+        self, limit_runs: int = 200
+    ) -> list[tuple[str, str, str, float, float | None, float | None]]:
+        """(probe_id, target, signal, z, observed, baseline) for every signal of
+        every clean run.
 
         Clean runs only, and that restriction is the whole point: a run that passed
         is a run where nothing drifted, so the `z` values it recorded are what normal
         looks like. How close those get to `warn_k` is how close the tool came to
         crying wolf. A run that drifted would contaminate the answer with the very
         thing being excluded.
+
+        `observed`/`baseline` ride along with `z` because `z` alone cannot tell
+        `calibrate` whether a signal that never crossed `warn_k` genuinely never
+        moved, or moved substantially but only in the direction nobody alerts on
+        -- `z_score` clamps that case to exactly 0 before it is ever recorded.
+        Comparing the raw values lets the report say which, without needing to
+        reconstruct a band's scale (and risk doing it against the wrong `warn_k`,
+        if thresholds changed since the row was written).
         """
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT results.probe_id, results.target, results.signal, results.z "
+                "SELECT results.probe_id, results.target, results.signal, results.z, "
+                "results.observed, results.baseline "
                 "FROM results JOIN runs USING (run_id) "
                 "WHERE runs.level = 'pass' AND results.z IS NOT NULL "
                 "AND results.run_id IN ("
@@ -193,7 +205,17 @@ class History:
                 ")",
                 (limit_runs,),
             ).fetchall()
-        return [(r[0], r[1], r[2], float(r[3])) for r in rows]
+        return [
+            (
+                r[0],
+                r[1],
+                r[2],
+                float(r[3]),
+                None if r[4] is None else float(r[4]),
+                None if r[5] is None else float(r[5]),
+            )
+            for r in rows
+        ]
 
     def clean_run_span(self) -> tuple[int, str | None, str | None]:
         """(count, earliest, latest) over clean runs, for sizing the evidence."""
