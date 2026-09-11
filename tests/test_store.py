@@ -167,6 +167,37 @@ def test_slug_never_returns_empty():
     assert slug("a b") == "a-b"
 
 
+def test_slug_collisions_do_not_share_a_directory(tmp_path):
+    """`slug` alone is not injective: a space and a hyphen both survive as `-`,
+    so `slug("summarise en") == slug("summarise-en")`. Two probes with these
+    ids would otherwise share one baseline directory -- and so one version
+    sequence -- with no way to tell them apart from config.
+    """
+    assert slug("summarise en") == slug("summarise-en")
+
+    store = BaselineStore(tmp_path)
+    store.save("prod", "summarise en", [sample("first")], "h1")
+    store.save("prod", "summarise-en", [sample("second")], "h2")
+
+    assert store.load("prod", "summarise en").samples[0].text == "first"
+    assert store.load("prod", "summarise-en").samples[0].text == "second"
+
+
+def test_the_join_separator_cannot_be_smuggled_in_by_an_id(tmp_path):
+    """`_dir` joins target and probe with `__`, and a raw id containing `__`
+    used to be able to relocate that boundary: target `a__b` + probe `c` and
+    target `a` + probe `b__c` both slugged to the same joined directory name
+    `a__b__c`, silently merging two unrelated probes' baselines and version
+    history.
+    """
+    store = BaselineStore(tmp_path)
+    store.save("a__b", "c", [sample("first")], "h1")
+    store.save("a", "b__c", [sample("second")], "h2")
+
+    assert store.load("a__b", "c").samples[0].text == "first"
+    assert store.load("a", "b__c").samples[0].text == "second"
+
+
 def test_usable_excludes_errored_samples(tmp_path):
     store = BaselineStore(tmp_path)
     store.save("prod", "p", [sample("good"), sample("", error="timeout")], "h")

@@ -15,14 +15,19 @@ provider drift.
 
 Layout, chosen so it survives being read by a human at 3am with `cat`:
 
-    .stillsane/baselines/<target>__<probe>/v3/
+    .stillsane/baselines/<target>-<hash>__<probe>-<hash>/v3/
         meta.json       # created_at, config_hash, model_id, fingerprint, n
         samples.jsonl   # frozen reference outputs, one per line
         variance.json   # pooled distances + day-one anchors, per signal
+
+Each directory component carries a short hash of its *raw*, un-slugged id
+alongside the readable part -- see `_dir_component`'s docstring for why a
+readable name alone is not enough to keep two different ids apart.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -66,6 +71,28 @@ def slug(value: str) -> str:
     return cleaned or "unnamed"
 
 
+def _dir_component(value: str) -> str:
+    """`slug(value)` plus a short hash of the *raw* value, so two different ids
+    can never share a directory.
+
+    `slug` alone is not injective: it collapses whatever separates two ids into
+    the same character, so `"summarise en"` and `"summarise-en"` produce the
+    identical slug. Worse, `_dir` joins target and probe with `__`, and `_` is
+    itself a character `slug` leaves untouched -- so a target `"a__b"` with
+    probe `"c"` and a target `"a"` with probe `"b__c"` slug to the same joined
+    directory name, `"a__b__c"`. Two probes sharing a directory then share a
+    version sequence: `check` on either loads the other's latest baseline,
+    fails the hash check, and errors rather than silently misreporting -- but
+    it is unfixable from config short of renaming one of them.
+
+    The hash is of the untransformed id, not the slug, so it disambiguates
+    exactly the cases above where the slugs (or their concatenation) collide
+    despite the raw ids differing.
+    """
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+    return f"{slug(value)}-{digest}"
+
+
 @dataclass
 class Baseline:
     target_name: str
@@ -95,7 +122,7 @@ class BaselineStore:
         self.root = Path(root) / "baselines"
 
     def _dir(self, target_name: str, probe_id: str) -> Path:
-        return self.root / f"{slug(target_name)}__{slug(probe_id)}"
+        return self.root / f"{_dir_component(target_name)}__{_dir_component(probe_id)}"
 
     def versions(self, target_name: str, probe_id: str) -> list[int]:
         base = self._dir(target_name, probe_id)
