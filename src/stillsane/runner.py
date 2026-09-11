@@ -318,11 +318,10 @@ async def check(
             if is_clean(verdict):
                 evidence = within_run_evidence(signals, [s for s in samples if s.ok])
                 if evidence:
-                    store.update_variance(
-                        baseline,
-                        pool_from_run(evidence, baseline.pooled, baseline.anchors),
-                        baseline.anchors,
+                    new_pooled, new_anchors = pool_from_run(
+                        evidence, baseline.pooled, baseline.anchors
                     )
+                    store.update_variance(baseline, new_pooled, new_anchors)
 
         await _run_judge(config, verdicts, client)
 

@@ -155,10 +155,28 @@ def pool_from_run(
     existing: dict[str, list[float]],
     anchors: dict[str, Anchor],
     cfg: PoolConfig | None = None,
-) -> dict[str, list[float]]:
-    """Apply `merge_pool` across every signal of a probe."""
-    out = dict(existing)
+) -> tuple[dict[str, list[float]], dict[str, Anchor]]:
+    """Apply `merge_pool` across every signal of a probe.
+
+    Returns the updated pool *and* the updated anchors, not just the pool. A
+    signal with no stored anchor -- one that did not apply at baseline capture
+    time, so `capture_baseline` never derived one for it -- gets one derived
+    here, from whatever evidence is available the first time this signal has
+    any. That anchor must then be persisted and reused, exactly like one
+    captured at baseline: if the caller keeps passing the same empty
+    `anchors[name]` back in on every run, this function would re-derive a
+    "fresh" anchor from the pool every time, and since the pool has already
+    grown from prior runs by then, the anchor tracks the pool instead of a
+    fixed day-one reference. That is precisely the ratchet `merge_pool`'s own
+    docstring exists to close, just relocated one level up: the cap holds
+    against a reference that itself quietly slides.
+    """
+    out_pool = dict(existing)
+    out_anchors = dict(anchors)
     for name, values in signals_to_values.items():
-        anchor = anchors.get(name) or anchor_of(existing.get(name, []) or values)
-        out[name] = merge_pool(existing.get(name, []), values, anchor, cfg)
-    return out
+        anchor = out_anchors.get(name)
+        if anchor is None:
+            anchor = anchor_of(existing.get(name, []) or values)
+            out_anchors[name] = anchor
+        out_pool[name] = merge_pool(existing.get(name, []), values, anchor, cfg)
+    return out_pool, out_anchors

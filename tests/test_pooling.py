@@ -202,9 +202,32 @@ def test_pool_from_run_applies_per_signal():
     anchors = {k: anchor_of(v) for k, v in existing.items()}
     new = {"semantic_distance": [0.10, 0.11], "length_chars": [401.0, 400.0]}
 
-    pooled = pool_from_run(new, existing, anchors)
+    pooled, out_anchors = pool_from_run(new, existing, anchors)
     assert len(pooled["semantic_distance"]) == 4
     assert len(pooled["length_chars"]) == 4
+    # Both signals already had a stored anchor, so it must pass through unchanged.
+    assert out_anchors == anchors
+
+
+def test_a_signal_with_no_stored_anchor_gets_one_that_then_sticks():
+    """The ratchet this closes: a signal absent from `anchors` (it did not
+    apply at baseline capture time) needs an anchor derived from the first
+    evidence for it. That anchor must then be returned and persisted, not
+    re-derived from the pool on the next call -- a "fresh" anchor recomputed
+    every run tracks wherever the pool has since drifted to, rather than a
+    fixed day-one reference, which reopens the exact ratchet `merge_pool`'s
+    own docstring exists to close, one level up.
+    """
+    values = [0.10, 0.11, 0.11, 0.10]
+    pool1, anchors1 = pool_from_run({"tool_call_distance": values}, {}, {})
+    assert "tool_call_distance" in anchors1
+    first_anchor = anchors1["tool_call_distance"]
+
+    # Caller correctly threads the anchor forward, as `runner.py` now does.
+    # Even though the pool itself keeps growing, the anchor must not move.
+    pool2, anchors2 = pool_from_run({"tool_call_distance": values}, pool1, anchors1)
+    assert anchors2["tool_call_distance"] == first_anchor
+    assert len(pool2["tool_call_distance"]) == 8
 
 
 def test_pooled_variance_feeds_the_comparison(signals_for):
