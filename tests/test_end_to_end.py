@@ -855,24 +855,20 @@ def test_history_cli_needs_probe_and_target_with_signal(tmp_path, capsys):
 def test_capture_names_floored_pointwise_signals(env):
     """The capture-time warning used to see only the distance signals.
 
-    `_floored_signals` read from the pooled record, which by design holds pairwise
-    distances only, so `length_chars` and `completion_tokens` could never be named
-    however floored they were. Against a real baseline that meant one signal
-    reported and three floored in fact, and the gap was invisible until `bands`
-    recomputed them separately.
+    Before `capture_baseline` reused `bands.inspect` to fill `baseline.floored`,
+    the equivalent capture-time code read from the pooled record, which by
+    design holds pairwise distances only, so `length_chars` and
+    `completion_tokens` could never be named however floored they were.
+    Against a real baseline that meant one signal reported and three floored
+    in fact, and the gap was invisible until `bands` recomputed them
+    separately. `capture_baseline` now shares that exact code path, so this
+    checks the outcome on the object it actually returns.
     """
     config, store, _ = env
-    run_baseline(config, store, STABLE)
-    baseline = store.load("prod", "extract_invoice")
+    written = run_baseline(config, store, STABLE)
+    baseline = written[0]
 
-    from stillsane.compare import BandConfig
-    from stillsane.runner import _floored_signals
-    from stillsane.signals import HashingEmbedder, build_signals
-
-    signals = build_signals(config.probes[0].checks, HashingEmbedder())
-    named = _floored_signals(signals, baseline.pooled, BandConfig(), baseline.usable)
-
-    assert "length_chars" in named, (
+    assert "length_chars" in baseline.floored, (
         "a floored pointwise band must be nameable at capture time, not only by `bands`"
     )
 
@@ -883,13 +879,14 @@ def test_capture_ignores_signals_that_do_not_apply(env):
     run_baseline(config, store, STABLE)
     baseline = store.load("prod", "extract_invoice")
 
+    from stillsane.bands import inspect as inspect_bands
     from stillsane.compare import BandConfig
-    from stillsane.runner import _floored_signals
     from stillsane.signals import HashingEmbedder, build_signals
 
     for sample in baseline.samples:
         sample.completion_tokens = None
 
     signals = build_signals(config.probes[0].checks, HashingEmbedder())
-    named = _floored_signals(signals, baseline.pooled, BandConfig(), baseline.usable)
+    report = inspect_bands(baseline, signals, BandConfig(), config.probes[0].check_samples)
+    named = [sb.signal for sb in report.signals if sb.band.floored]
     assert "completion_tokens" not in named

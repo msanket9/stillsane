@@ -425,14 +425,18 @@ def evaluate_pointwise(
     baseline: Sequence[Sample],
     current: Sequence[Sample],
     cfg: BandConfig,
-    pooled_values: Sequence[float] | None = None,
 ) -> SignalVerdict | None:
-    """Compare current values against the baseline value distribution."""
-    base_vals = (
-        list(pooled_values)
-        if pooled_values
-        else [v for v in (signal.value(s) for s in baseline) if v is not None]
-    )
+    """Compare current values against the baseline value distribution.
+
+    No `pooled_values` parameter, unlike `evaluate_pairwise` -- pointwise bands
+    stay anchored to the baseline for good (`pooling.py`'s
+    `within_run_evidence` pools pairwise signals only, deliberately, since a
+    pointwise band sits on the value itself and pooling current values would
+    absorb the very movement the signal exists to detect). A pointwise signal
+    is never in `baseline.pooled`, so accepting a pool here was dead: nothing
+    upstream can ever supply one.
+    """
+    base_vals = [v for v in (signal.value(s) for s in baseline) if v is not None]
     cur_vals = [v for v in (signal.value(s) for s in current) if v is not None]
     if not cur_vals or not base_vals:
         return None
@@ -553,7 +557,7 @@ def evaluate(
     if isinstance(signal, PairwiseSignal):
         return evaluate_pairwise(signal, baseline, current, cfg, pooled)
     if isinstance(signal, PointwiseSignal):
-        return evaluate_pointwise(signal, baseline, current, cfg, pooled)
+        return evaluate_pointwise(signal, baseline, current, cfg)
     if isinstance(signal, CategoricalSignal):
         return evaluate_categorical(signal, baseline, current, escalate_categorical)
     raise TypeError(f"Unknown signal type: {type(signal).__name__}")

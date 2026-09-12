@@ -13,29 +13,27 @@ testable against a fake target with no network.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
 from dataclasses import dataclass
 
 import httpx
 
+from .bands import inspect as inspect_bands
 from .compare import (
     Anchor,
-    BandConfig,
     anchor_of,
     build_run,
     compare_probe,
     is_clean,
     pairwise_within,
     pool_from_run,
-    robust_band,
     within_run_evidence,
 )
 from .config import Config, ProbeConfig, TargetConfig, config_hash
 from .judge import Judge, JudgeVerdict
 from .judge import apply as judge_apply
-from .models import Direction, Level, ProbeVerdict, RunResult, Sample, SignalVerdict
+from .models import Level, ProbeVerdict, RunResult, Sample, SignalVerdict
 from .signals import build_signals, default_embedder
-from .signals.base import PairwiseSignal, PointwiseSignal, Signal
+from .signals.base import PairwiseSignal
 from .store import Baseline, BaselineStore, History
 from .targets import DEFAULT_CONCURRENCY, Target, build_target, collect
 
@@ -157,63 +155,18 @@ async def capture_baseline(
             pooled=pooled,
             anchors=anchors,
         )
-        baseline.floored = _floored_signals(
-            signals, pooled, config.thresholds.to_band_config(), baseline.usable
+        # Reuses `bands.inspect` rather than rebuilding each band a second way:
+        # the two used to walk the signal list separately, one recomputing a
+        # band just to read `.floored` off it. `inspect` already does that (and
+        # more -- the collapsed/self-outside diagnosis `stillsane bands` shows
+        # is now available here too, for free) from the baseline this call just
+        # wrote, so there is nothing left for a capture-time version to redo.
+        report = inspect_bands(
+            baseline, signals, config.thresholds.to_band_config(), plan.probe.check_samples
         )
+        baseline.floored = [sb.signal for sb in report.signals if sb.band.floored]
         written.append(baseline)
     return written
-
-
-def _floored_signals(
-    signals: list[Signal],
-    pooled: dict[str, list[float]],
-    cfg: BandConfig,
-    samples: Sequence[Sample] = (),
-) -> list[str]:
-    """Which signals ended up with a defaulted band rather than a measured one.
-
-    Worth knowing at capture time, because that is the moment the user can still
-    do something about it -- take more samples, or satisfy themselves that the
-    probe really is deterministic. Discovering it later, from a surprising alert,
-    is the expensive way to find out.
-
-    Pointwise signals have to be recomputed from the samples rather than read from
-    `pooled`, which by design holds pairwise distances only. Reading `pooled` alone
-    meant this could never name `length_chars` or `completion_tokens` however
-    floored they were, so it under-reported for as long as it existed: a real
-    baseline had one signal named here and three floored in fact. Their `rel_floor`
-    matters too, and was previously not passed at all.
-    """
-    out = []
-    for signal in signals:
-        if isinstance(signal, PairwiseSignal):
-            values = pooled.get(signal.name) or []
-            direction = Direction.UP_IS_BAD
-        elif isinstance(signal, PointwiseSignal):
-            # None means the signal does not apply to these samples, which is a
-            # normal condition: Anthropic reports no token counts under the names
-            # this looks for, so those signals stay quiet rather than erroring.
-            values = [
-                v for v in (signal.value(s) for s in samples if s.ok) if v is not None
-            ]
-            direction = signal.direction
-        else:
-            # Categorical signals have no band, so none of this applies.
-            continue
-
-        if not values:
-            continue
-        band = robust_band(
-            values,
-            direction=direction,
-            cfg=cfg,
-            floor=getattr(signal, "floor", 0.0),
-            rel_floor=getattr(signal, "rel_floor", 0.0),
-            override=signal.band_override,
-        )
-        if band.floored:
-            out.append(signal.name)
-    return out
 
 
 async def _run_judge(
