@@ -551,7 +551,7 @@ def evaluate(
     current: Sequence[Sample],
     cfg: BandConfig,
     pooled: Sequence[float] | None = None,
-    escalate_categorical: bool = False,
+    escalate_fingerprint: bool = False,
 ) -> SignalVerdict | None:
     """Dispatch one signal to the right comparison. None means 'does not apply'."""
     if isinstance(signal, PairwiseSignal):
@@ -559,5 +559,11 @@ def evaluate(
     if isinstance(signal, PointwiseSignal):
         return evaluate_pointwise(signal, baseline, current, cfg)
     if isinstance(signal, CategoricalSignal):
-        return evaluate_categorical(signal, baseline, current, escalate_categorical)
+        # Gated on the signal's own `escalatable`, not applied blindly to
+        # whichever categorical happens to be running: the config flag is
+        # named (and documented) for `fingerprint` specifically, so only a
+        # signal that opts in via `escalatable = True` is affected by it.
+        return evaluate_categorical(
+            signal, baseline, current, escalate_fingerprint and signal.escalatable
+        )
     raise TypeError(f"Unknown signal type: {type(signal).__name__}")

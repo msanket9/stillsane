@@ -76,6 +76,15 @@ class PointwiseSignal(Signal):
 
 class CategoricalSignal(Signal):
     kind = SignalKind.CATEGORICAL
+    #: Whether `escalate_fingerprint` (the one config knob that promotes a
+    #: categorical change to a build failure) applies to this signal. Off by
+    #: default -- only `Fingerprint` opts in. Without this, the config's one
+    #: escalation flag would apply to *every* categorical signal regardless of
+    #: name, which happens to be harmless today only because `ModelId` (the
+    #: other categorical signal) already defaults to `Level.DRIFT` on its own;
+    #: a future WARN-capped categorical would be silently escalated by a flag
+    #: named for fingerprints specifically.
+    escalatable: bool = False
 
     @abstractmethod
     def value(self, sample: Sample) -> str | None:

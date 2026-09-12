@@ -100,7 +100,7 @@ def compare_probe(
             current,
             cfg,
             pooled=pooled.get(signal.name),
-            escalate_categorical=escalate_fingerprint,
+            escalate_fingerprint=escalate_fingerprint,
         )
         if sv is not None:
             results.append(sv)

@@ -225,14 +225,21 @@ class ProbeConfig(BaseModel):
         return v
 
 
+#: One set of numbers, owned by the engine that actually uses them. `ThresholdConfig`
+#: below mirrors these as its own field defaults rather than hard-coding a second
+#: copy -- the two used to list 3.0/6.0/4/0.01/0.6 independently, and the README's
+#: "sensible starting points" line had no single place it was actually describing.
+_DEFAULT_BAND_CONFIG = BandConfig()
+
+
 class ThresholdConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    warn_k: float = 3.0
-    drift_k: float = 6.0
-    min_confident_n: int = 4
-    corroborating_p: float = 0.01
-    grey_zone: float = 0.6
+    warn_k: float = Field(default=_DEFAULT_BAND_CONFIG.warn_k)
+    drift_k: float = Field(default=_DEFAULT_BAND_CONFIG.drift_k)
+    min_confident_n: int = Field(default=_DEFAULT_BAND_CONFIG.min_confident_n)
+    corroborating_p: float = Field(default=_DEFAULT_BAND_CONFIG.corroborating_p)
+    grey_zone: float = Field(default=_DEFAULT_BAND_CONFIG.grey_zone)
 
     def to_band_config(self) -> BandConfig:
         return BandConfig(**self.model_dump())

@@ -21,6 +21,7 @@ class Fingerprint(CategoricalSignal):
 
     name = "fingerprint"
     max_level = Level.WARN
+    escalatable = True
 
     def value(self, sample: Sample) -> str | None:
         return sample.fingerprint

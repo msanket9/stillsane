@@ -16,7 +16,8 @@ from conftest import (
 )
 
 from stillsane.compare import BandConfig, compare_probe
-from stillsane.models import Level, ToolCall
+from stillsane.models import Level, Sample, ToolCall
+from stillsane.signals.base import CategoricalSignal
 
 CHECKS = ["valid_json", {"has_keys": ["total", "due_date"]}]
 
@@ -284,6 +285,39 @@ def test_fingerprint_change_can_be_escalated(signals_for):
         escalate_fingerprint=True,
     )
     assert verdict.level is Level.DRIFT
+
+
+def test_escalate_fingerprint_does_not_escalate_other_categorical_signals(signals_for):
+    """`escalate_fingerprint` used to apply to whichever categorical signal was
+    being evaluated, not to `fingerprint` specifically -- harmless today only
+    because `model_id`, the only other categorical signal, already defaults to
+    `Level.DRIFT` on its own (escalating it or not makes no difference). A
+    future categorical signal capped at WARN, like `fingerprint` is, would be
+    silently escalated by a flag named for fingerprints. `escalatable` gates
+    that: only a signal that opts in is affected.
+    """
+
+    class HypotheticalWarnCategorical(CategoricalSignal):
+        name = "hypothetical_warn_categorical"
+        max_level = Level.WARN
+        # `escalatable` left at its default of False: this signal never opted in.
+
+        def value(self, s):
+            return s.raw.get("hypo") if s.raw else None
+
+    def hs(value):
+        return Sample(probe_id="p", target_name="prod", text="x", raw={"hypo": value})
+
+    verdict = compare_probe(
+        probe_id="extract_invoice",
+        target_name="prod",
+        signals=[HypotheticalWarnCategorical()],
+        baseline=[hs("a") for _ in range(5)],
+        current=[hs("b") for _ in range(3)],
+        escalate_fingerprint=True,
+    )
+    hypo = next(s for s in verdict.signals if s.signal == "hypothetical_warn_categorical")
+    assert hypo.level is Level.WARN
 
 
 def test_stable_fingerprint_is_silent(signals_for):
