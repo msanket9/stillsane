@@ -80,17 +80,11 @@ def _looks_like_a_leaked_tool_call(text: str) -> bool:
 
 
 class ClaudeCodeTarget(Target):
-    def build_request(self, probe: ProbeConfig) -> tuple[str, str, dict[str, Any], dict[str, Any]]:
-        raise NotImplementedError(
-            "ClaudeCodeTarget overrides _attempt() directly and never calls this; "
-            "it exists only to satisfy Target's abstract interface."
-        )
-
-    def parse(self, probe: ProbeConfig, body: Any) -> dict[str, Any]:
-        raise NotImplementedError(
-            "ClaudeCodeTarget overrides _attempt() directly and never calls this; "
-            "it exists only to satisfy Target's abstract interface."
-        )
+    """Speaks a subprocess, not HTTP, so it implements `_attempt` directly
+    rather than extending `HTTPTarget` -- `Target`'s abstract surface is just
+    `_attempt`, precisely so a target shaped like this one does not have to
+    fake a `build_request`/`parse` pair it has no use for.
+    """
 
     def _argv(self, probe: ProbeConfig) -> list[str]:
         argv = [

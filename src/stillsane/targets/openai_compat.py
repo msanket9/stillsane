@@ -10,7 +10,7 @@ from typing import Any
 
 from ..config import ProbeConfig
 from ..models import ToolCall
-from .base import Target
+from .base import HTTPTarget
 
 #: Fields providers use for the backend build identifier. OpenAI settled on
 #: `system_fingerprint`; others vary, and checking all of them costs nothing.
@@ -47,7 +47,7 @@ def read_finish_reason(body: Any) -> str | None:
     return None
 
 
-class OpenAICompatTarget(Target):
+class OpenAICompatTarget(HTTPTarget):
     def build_request(self, probe: ProbeConfig) -> tuple[str, str, dict[str, str], dict[str, Any]]:
         messages = []
         if probe.system:

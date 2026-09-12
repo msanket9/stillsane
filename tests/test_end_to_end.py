@@ -161,7 +161,7 @@ def test_concurrency_is_shared_across_probes_against_one_target(tmp_path):
 def test_baseline_then_check_passes(env):
     config, store, history = env
     written = run_baseline(config, store, STABLE)
-    assert len(written) == 1 and written[0].version == 1
+    assert len(written) == 1 and written[0].baseline.version == 1
 
     result = run_check(config, store, history, STABLE)
     assert result.level is Level.PASS
@@ -866,9 +866,9 @@ def test_capture_names_floored_pointwise_signals(env):
     """
     config, store, _ = env
     written = run_baseline(config, store, STABLE)
-    baseline = written[0]
+    captured = written[0]
 
-    assert "length_chars" in baseline.floored, (
+    assert "length_chars" in captured.floored, (
         "a floored pointwise band must be nameable at capture time, not only by `bands`"
     )
 

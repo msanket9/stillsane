@@ -12,11 +12,15 @@ import json
 from typing import Any
 
 from ..config import ProbeConfig
-from .base import Target, dotted_get, render_template
+from .base import HTTPTarget, dotted_get, render_template
 from .openai_compat import read_fingerprint, read_finish_reason
 
 
-class HTTPTarget(Target):
+class GenericHTTPTarget(HTTPTarget):
+    """`type: http` -- an arbitrary endpoint described entirely by config,
+    rather than assumed to speak any particular provider's shape.
+    """
+
     def build_request(self, probe: ProbeConfig) -> tuple[str, str, dict[str, str], dict[str, Any]]:
         variables = {"prompt": probe.prompt, "system": probe.system or ""}
         payload = render_template(self.config.body or {}, variables)

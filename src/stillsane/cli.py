@@ -184,7 +184,8 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         print("No probes matched.", file=sys.stderr)
         return 1
 
-    for baseline in written:
+    for captured in written:
+        baseline = captured.baseline
         n = len(baseline.usable)
         print(
             f"  {baseline.probe_id} @ {baseline.target_name}: "
@@ -196,7 +197,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     # A floored band is a defaulted one: the samples showed no measurable spread,
     # so it fell back to the signal's absolute floor. Say so here, where the user
     # can still act, rather than letting them discover it via a surprising alert.
-    floored = [(b, b.floored) for b in written if b.floored]
+    floored = [(c.baseline, c.floored) for c in written if c.floored]
     if floored:
         print("\nBands that were defaulted rather than measured:")
         for baseline, names in floored:

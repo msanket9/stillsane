@@ -48,6 +48,23 @@ class Plan:
     expected_hash: str
 
 
+@dataclass(frozen=True)
+class Captured:
+    """One `capture_baseline` result: the baseline just written, and which of
+    its signals came out floored -- defaulted rather than measured.
+
+    `floored` used to live as a field on `Baseline` itself, documented there as
+    "not persisted... only interesting at the moment of capture" -- true, but
+    that made it a field that is simply wrong on every `Baseline` `store.load`
+    returns (always `[]`, since nothing ever populates it after the fact).
+    Returning it alongside the baseline instead, only from the one call that
+    actually knows it, says the same thing without the always-empty field.
+    """
+
+    baseline: Baseline
+    floored: list[str]
+
+
 def plans_for(config: Config) -> list[Plan]:
     return [
         Plan(
@@ -109,7 +126,7 @@ async def capture_baseline(
     store: BaselineStore,
     only: set[str] | None = None,
     client: httpx.AsyncClient | None = None,
-) -> list[Baseline]:
+) -> list[Captured]:
     """Take fresh samples and write a new baseline version for each probe."""
     plans = [p for p in plans_for(config) if not only or p.probe.id in only]
     if not plans:
@@ -164,8 +181,8 @@ async def capture_baseline(
         report = inspect_bands(
             baseline, signals, config.thresholds.to_band_config(), plan.probe.check_samples
         )
-        baseline.floored = [sb.signal for sb in report.signals if sb.band.floored]
-        written.append(baseline)
+        floored = [sb.signal for sb in report.signals if sb.band.floored]
+        written.append(Captured(baseline=baseline, floored=floored))
     return written
 
 

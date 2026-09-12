@@ -108,7 +108,16 @@ async def _backoff(seconds: float) -> None:
 
 
 class Target(ABC):
-    """Base for anything stillsane can point at."""
+    """Base for anything stillsane can point at.
+
+    The abstract surface is deliberately just `_attempt`: one invocation, never
+    raising, returning `(Sample, transient)`. That is the actual seam between
+    "how do I reach this thing" and "what do I do with a failure" -- `call`'s
+    retry loop only needs a `Sample` and a transient/not flag, and does not
+    care whether the invocation was an HTTP request or a subprocess. Anything
+    that talks HTTP (most targets) gets the shared request/response machinery
+    from `HTTPTarget` below instead of reimplementing `_attempt` itself.
+    """
 
     def __init__(self, config: TargetConfig) -> None:
         self.config = config
@@ -116,6 +125,55 @@ class Target(ABC):
     @property
     def name(self) -> str:
         return self.config.name
+
+    async def call(self, probe: ProbeConfig, client: httpx.AsyncClient) -> Sample:
+        """One sample, retrying only failures that measured nothing.
+
+        The rule that matters is which failures are eligible. A timeout or a dropped
+        connection means the request never landed, so trying again asks the same
+        question a second time. A verdict is different: if the probe answered and the
+        answer was drift, asking again until it comes up clean is the same defect as
+        a monitor that silently re-baselines. So retries are gated on transport, and
+        `_attempt` reports that separately from whether the sample merely failed.
+
+        Four scheduled runs were lost to transient transport failures in one week
+        while building this, and every manual re-run minutes later succeeded, which
+        is what the default of one retry is calibrated against.
+        """
+        attempts = 1 + max(0, self.config.retries)
+        for attempt in range(1, attempts + 1):
+            sample, transient = await self._attempt(probe, client)
+            sample.attempts = attempt
+            if not transient or attempt == attempts:
+                return sample
+            # Backoff doubles, so a provider having a bad minute is not hammered.
+            await _backoff(self.config.retry_backoff_s * (2 ** (attempt - 1)))
+        return sample
+
+    @abstractmethod
+    async def _attempt(
+        self, probe: ProbeConfig, client: httpx.AsyncClient
+    ) -> tuple[Sample, bool]:
+        """One invocation. Never raises for anything the endpoint did.
+
+        Returns the sample and whether its failure is worth retrying. That flag is
+        deliberately not a field on `Sample`: it describes this attempt, not the
+        observation, and persisting it would invite someone to treat a stored sample
+        as retryable long after the fact.
+
+        `client` is unused by a target that does not speak HTTP (`claude_code`,
+        say) -- it stays part of the signature only so `call`'s retry loop can
+        treat every target the same way regardless of transport.
+        """
+
+
+class HTTPTarget(Target):
+    """Base for anything that speaks plain HTTP: build a request, parse a
+    response. `OpenAICompatTarget` and `GenericHTTPTarget` differ only in how
+    they do those two things; the request/response plumbing between them --
+    headers, the actual call, status/timeout/JSON-decode handling -- is
+    identical and lives here exactly once.
+    """
 
     @abstractmethod
     def build_request(self, probe: ProbeConfig) -> tuple[str, str, dict[str, str], dict[str, Any]]:
@@ -145,40 +203,9 @@ class Target(ABC):
                 )
         return headers
 
-    async def call(self, probe: ProbeConfig, client: httpx.AsyncClient) -> Sample:
-        """One sample, retrying only failures that measured nothing.
-
-        The rule that matters is which failures are eligible. A timeout or a dropped
-        connection means the request never landed, so trying again asks the same
-        question a second time. A verdict is different: if the probe answered and the
-        answer was drift, asking again until it comes up clean is the same defect as
-        a monitor that silently re-baselines. So retries are gated on transport, and
-        `_attempt` reports that separately from whether the sample merely failed.
-
-        Four scheduled runs were lost to transient transport failures in one week
-        while building this, and every manual re-run minutes later succeeded, which
-        is what the default of one retry is calibrated against.
-        """
-        attempts = 1 + max(0, self.config.retries)
-        for attempt in range(1, attempts + 1):
-            sample, transient = await self._attempt(probe, client)
-            sample.attempts = attempt
-            if not transient or attempt == attempts:
-                return sample
-            # Backoff doubles, so a provider having a bad minute is not hammered.
-            await _backoff(self.config.retry_backoff_s * (2 ** (attempt - 1)))
-        return sample
-
     async def _attempt(
         self, probe: ProbeConfig, client: httpx.AsyncClient
     ) -> tuple[Sample, bool]:
-        """One invocation. Never raises for anything the endpoint did.
-
-        Returns the sample and whether its failure is worth retrying. That flag is
-        deliberately not a field on `Sample`: it describes this attempt, not the
-        observation, and persisting it would invite someone to treat a stored sample
-        as retryable long after the fact.
-        """
         sample = Sample(probe_id=probe.id, target_name=self.name)
 
         started = time.perf_counter()
