@@ -597,6 +597,49 @@ def test_cli_check_returns_the_drift_exit_code(tmp_path, monkeypatch, capsys):
     assert "DRIFT" in capsys.readouterr().out
 
 
+def test_bands_orders_output_the_same_way_check_does(tmp_path, monkeypatch, capsys):
+    """`bands` used to iterate targets-then-probes while `check` and `baseline`
+    both go probe-then-target via `config.pairs()`, so the same multi-target,
+    multi-probe config listed its rows in a different order depending on
+    which command you ran.
+    """
+    multi = {
+        **CONFIG,
+        "targets": [
+            {**CONFIG["targets"][0], "name": "prod_a"},
+            {**CONFIG["targets"][0], "name": "prod_b"},
+        ],
+        "probes": [
+            {**CONFIG["probes"][0], "id": "probe_x"},
+            {**CONFIG["probes"][0], "id": "probe_y"},
+        ],
+    }
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(multi))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+
+    cli.main(["-c", str(config_path), "baseline"])
+    capsys.readouterr()
+
+    cli.main(["-c", str(config_path), "bands"])
+    bands_order = [
+        line.split()[0] for line in capsys.readouterr().out.splitlines()
+        if line.startswith("probe_")
+    ]
+
+    cli.main(["-c", str(config_path), "check"])
+    check_order = [
+        line.split()[1] for line in capsys.readouterr().out.splitlines()
+        if line.startswith(("PASS", "WARN", "DRIFT", "ERROR"))
+    ]
+
+    expected = ["probe_x", "probe_x", "probe_y", "probe_y"]
+    assert bands_order == expected
+    assert check_order == expected
+
+
 def test_missing_api_key_is_an_error_not_a_traceback(tmp_path, monkeypatch, capsys):
     """A missing `api_key_env` used to raise `RuntimeError` from `build_request`,
     uncaught anywhere, and an uncaught exception exits 1 -- the DRIFT code. A CI

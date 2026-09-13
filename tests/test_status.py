@@ -209,6 +209,25 @@ def test_probe_level_comes_from_the_newest_run():
     assert status.probes[0].errors == 1
 
 
+def test_a_drifting_probe_with_no_errors_still_says_so():
+    """`errors`/`dead`/`flaky` count ERROR-level runs only, so a probe that is
+    drifting (or warning) every run but never erroring used to render as "no
+    errors" -- true, but not the same as healthy, and the one place that could
+    have said so (`last_level`) was computed and tested but never shown.
+    """
+    status = build(
+        [run("r1", 1, "drift")],
+        [result("r1", 1, "p", "drift", signal="semantic_distance")],
+    )
+    assert status.probes[0].last_level == "drift"
+    text = render(status)
+    assert "last: drift" in text
+    assert "no errors" not in text
+
+    data = payload(status)
+    assert data["probes"][0]["last_level"] == "drift"
+
+
 def test_a_run_counts_once_per_probe_however_many_signals_it_has():
     """Otherwise a probe with nine signals looks like nine runs."""
     status = build(

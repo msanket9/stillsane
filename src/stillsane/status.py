@@ -303,6 +303,12 @@ def render(status: Status, limit: int = 20) -> str:
             note = f"failing every run ({probe.errors}/{probe.runs})"
         elif probe.flaky:
             note = f"errored {probe.errors} of {probe.runs} run(s)"
+        elif probe.last_level != Level.PASS.value:
+            # `errors`/`dead`/`flaky` only ever count ERROR-level runs, so a
+            # probe that is drifting or warning on every run -- never
+            # erroring -- would otherwise read as "no errors" here with
+            # nothing to say it is not passing either.
+            note = f"{probe.runs} run(s), last: {probe.last_level}"
         else:
             note = f"{probe.runs} run(s), no errors"
         lines.append(f"  {label:<{width}}  {note}")
@@ -393,6 +399,7 @@ def payload(status: Status) -> dict:
                 "error_rate": round(p.error_rate, 4),
                 "flaky": p.flaky,
                 "dead": p.dead,
+                "last_level": p.last_level,
                 "reasons": p.reasons,
             }
             for p in status.probes

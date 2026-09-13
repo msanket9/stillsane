@@ -228,18 +228,20 @@ def cmd_bands(args: argparse.Namespace) -> int:
     reports = []
     missing = []
 
-    for target in config.targets:
-        for probe in config.probes:
-            if only and probe.id not in only:
-                continue
-            if probe.targets and target.name not in probe.targets:
-                continue
-            baseline = store.load(target.name, probe.id)
-            if baseline is None:
-                missing.append(f"{probe.id} @ {target.name}")
-                continue
-            signals = build_probe_signals(probe.checks, watch_fingerprint=target.watch_fingerprint)
-            reports.append(inspect_bands(baseline, signals, cfg, probe.check_samples))
+    # `config.pairs()`, not a target-then-probe nested loop: `check` and
+    # `baseline` both order their output this way (probe-then-target), and a
+    # second, independent traversal here previously produced a different
+    # order for the same multi-target config. `pairs()` also already applies
+    # a probe's own `targets` scoping, so there is no separate filter for it.
+    for probe, target in config.pairs():
+        if only and probe.id not in only:
+            continue
+        baseline = store.load(target.name, probe.id)
+        if baseline is None:
+            missing.append(f"{probe.id} @ {target.name}")
+            continue
+        signals = build_probe_signals(probe.checks, watch_fingerprint=target.watch_fingerprint)
+        reports.append(inspect_bands(baseline, signals, cfg, probe.check_samples))
 
     if not reports:
         if missing:
