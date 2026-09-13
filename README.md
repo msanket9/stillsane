@@ -665,6 +665,15 @@ right one to use.
 Also on a target: `timeout_s`, `retries`, `retry_backoff_s`, and
 `escalate_fingerprint` to make a changed fingerprint fail rather than warn.
 
+`store_raw: true` persists each sample's full decoded response body into
+`samples.jsonl` at baseline capture time. Off by default: nothing in stillsane
+reads it, and `.stillsane/baselines/` is meant to be committed to git (see
+below), which for `type: http` against your own app means whatever your API
+actually returned -- tenant data included -- landing in version-control
+history that is not easily purged after the fact. Turn it on per target only
+once you have an actual reader for it and have checked what that target's
+responses contain.
+
 `temperature` and `max_tokens` are accepted in config but have no effect here --
 the `claude` CLI's `-p` mode has no flag for either, unlike the other target
 types, which do support both. Verified against `claude --help` directly rather
@@ -803,6 +812,8 @@ Two things it relies on:
 - **Commit `.stillsane/baselines/`.** The workflow needs something to compare
   against. They are plain text and diff like code. Leave
   `.stillsane/history.sqlite` out, since it is a binary that changes every run.
+  Full response bodies are not part of this by default (`store_raw`, above) --
+  only the extracted text and metadata a check actually compares against.
 - **A daily schedule is the point.** Provider-side model changes arrive without
   warning; finding out within a day is the entire product.
 

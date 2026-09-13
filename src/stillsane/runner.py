@@ -164,6 +164,15 @@ async def capture_baseline(
                 pooled[signal.name] = distances
                 anchors[signal.name] = anchor_of(distances)
 
+        if not plan.target_config.store_raw:
+            # `store.save` persists whatever is on `Sample.raw` into
+            # `samples.jsonl`, and nothing in stillsane reads it back -- no
+            # signal, no report. Default off, so the full response bodies the
+            # README tells people to commit to git are the ones a target
+            # opted into, not every target by default.
+            for s in samples:
+                s.raw = {}
+
         baseline = store.save(
             plan.target_config.name,
             plan.probe.id,

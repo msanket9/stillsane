@@ -72,6 +72,17 @@ class TargetConfig(BaseModel):
     #: Whether a changed fingerprint fails the build or merely reports.
     escalate_fingerprint: bool = False
 
+    #: Persist each sample's full decoded response body into `samples.jsonl` at
+    #: baseline capture time. Off by default: nothing in stillsane reads it --
+    #: no signal, no report, no comparison -- and the README tells people to
+    #: commit `.stillsane/baselines/` to git, which for `type: http` against
+    #: your own app means whatever your API actually returned, tenant data
+    #: included, landing in version-control history that is not easily purged
+    #: after the fact. Turn it on per target once you have a concrete reader
+    #: for it (a future signal, a report feature) and have checked what that
+    #: target's responses actually contain.
+    store_raw: bool = False
+
     # --- `type: http` only ---
     method: str = "POST"
     path: str = ""

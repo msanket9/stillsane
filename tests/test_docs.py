@@ -179,6 +179,39 @@ def test_config_fields_are_documented():
     assert not missing, f"config options absent from the README: {missing}"
 
 
+def test_config_fields_are_actually_read():
+    """A field can be declared, documented, defaulted in the starter config and
+    the example, and still do nothing -- `watch_fingerprint` shipped exactly
+    that way: `grep -r watch_fingerprint src` found no reader anywhere. The
+    README-mentions check above cannot catch this, because the field *was*
+    mentioned; it was simply never consulted by any code.
+
+    A cheap proxy for "consulted": does `.<field>` appear as an attribute
+    access anywhere under `src/stillsane`? That also credits a field read only
+    by the model's own method rather than by external code -- `api_key_env`
+    via `TargetConfig.api_key()`, `targets` via `Config.pairs()` -- which is a
+    real reader, just one that happens to live in `config.py` alongside the
+    field itself. Only a field with *zero* such occurrences anywhere is
+    flagged, which is the exact shape `watch_fingerprint` had before it was
+    wired up.
+
+    Same idea as the "every command is documented somewhere" test: a
+    mechanical proxy that catches a whole class of "looks fine, does nothing"
+    mistakes without needing to understand what any individual field means.
+    """
+    src_root = Path(__file__).resolve().parents[1] / "src" / "stillsane"
+    text = "\n".join(p.read_text(encoding="utf-8") for p in src_root.rglob("*.py"))
+
+    missing = {}
+    for name, model in config_models().items():
+        gaps = [
+            f for f in model.model_fields if not re.search(rf"\.{re.escape(f)}\b", text)
+        ]
+        if gaps:
+            missing[name] = gaps
+    assert not missing, f"config fields declared but never read anywhere: {missing}"
+
+
 def test_documented_config_keys_exist():
     """The reverse: a documented key that no model accepts would be rejected.
 

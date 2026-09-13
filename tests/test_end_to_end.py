@@ -895,6 +895,31 @@ def test_history_cli_needs_probe_and_target_with_signal(tmp_path, capsys):
     assert "--probe and --target" in capsys.readouterr().err
 
 
+def test_raw_response_bodies_are_not_persisted_by_default(env):
+    """Nothing in stillsane reads `Sample.raw`, and the README tells people to
+    commit `.stillsane/baselines/` to git -- for `type: http` against a user's
+    own app, persisting it by default means whatever the API actually
+    returned, tenant data included, lands in version-control history that is
+    not easily purged. `store_raw` defaults to off, so a fresh capture must
+    not write it to disk.
+    """
+    config, store, _ = env
+    run_baseline(config, store, STABLE)
+    reloaded = store.load("prod", "extract_invoice")
+    assert all(s.raw == {} for s in reloaded.samples)
+
+
+def test_store_raw_opts_a_target_into_persisting_response_bodies(env):
+    config, store, _ = env
+    opted_in = Config.model_validate(
+        {**CONFIG, "targets": [{**CONFIG["targets"][0], "store_raw": True}]}
+    )
+    run_baseline(opted_in, store, STABLE)
+    reloaded = store.load("prod", "extract_invoice")
+    assert all(s.raw for s in reloaded.samples)
+    assert reloaded.samples[0].raw.get("model") == "some-model"
+
+
 def test_capture_names_floored_pointwise_signals(env):
     """The capture-time warning used to see only the distance signals.
 
