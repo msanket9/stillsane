@@ -64,7 +64,11 @@ def _signal_line(sv: SignalVerdict, paint: Painter) -> str:
         band += " (floor)"
 
     if observed or band or effect:
-        row = f"  {sv.signal:<20} {observed:>12}  {band:<24} {effect:<8}"
+        # 24, not 20: `has_keys[total,due_date]` -- the flagship example's own
+        # check -- is 24 characters, and a narrower column let that one row's
+        # `observed`/`band`/`effect` columns drift out of line with every
+        # other signal in the same report.
+        row = f"  {sv.signal:<24} {observed:>12}  {band:<24} {effect:<8}"
     else:
         # Pseudo-signals -- a missing baseline, a stale config hash, a dead endpoint
         # -- carry no measurement, so the columns above render as an empty line with

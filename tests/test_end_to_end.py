@@ -387,6 +387,26 @@ def test_verbose_shows_the_signals_that_passed(env):
     assert "semantic_distance" in render(result, verbose=True, colour=False)
 
 
+def test_a_long_signal_name_still_aligns_its_columns(env):
+    """`has_keys[total,due_date]` is 24 characters -- the flagship example's
+    own check -- and used to overflow the report's narrower signal-name
+    column, shifting that one row's observed/band/effect values out of line
+    with every other signal in the same report.
+    """
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    result = run_check(config, store, history, STABLE)
+    text = render(result, verbose=True, colour=False)
+
+    rows = [
+        line for line in text.splitlines()
+        if line.strip().startswith(("valid_json", "has_keys["))
+    ]
+    assert len(rows) == 2
+    band_starts = {line.index("band") for line in rows}
+    assert len(band_starts) == 1, f"columns do not line up: {rows}"
+
+
 def test_report_never_emits_escape_codes_when_colour_is_off(env):
     config, store, history = env
     run_baseline(config, store, STABLE)
