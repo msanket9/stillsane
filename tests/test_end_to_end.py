@@ -808,6 +808,39 @@ def test_cli_check_returns_the_drift_exit_code(tmp_path, monkeypatch, capsys):
     assert "DRIFT" in capsys.readouterr().out
 
 
+def test_bands_flags_a_baseline_the_config_has_moved_past(tmp_path, monkeypatch, capsys):
+    """`bands` used to inspect the *latest* baseline against the *current*
+    config's checks without ever comparing hashes, so it could report "all
+    bands look sound" on a baseline `check` is about to refuse outright --
+    the two commands disagreeing about whether there was anything to worry
+    about.
+    """
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(CONFIG))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    capsys.readouterr()
+
+    assert cli.main(["-c", str(config_path), "bands"]) == 0
+    assert "stale" not in capsys.readouterr().out
+
+    edited = {
+        **CONFIG,
+        "probes": [{**CONFIG["probes"][0], "prompt": "A completely different ask."}],
+    }
+    config_path.write_text(yaml.safe_dump(edited))
+
+    assert cli.main(["-c", str(config_path), "bands"]) == 0
+    out = capsys.readouterr().out
+    assert "stale" in out
+    assert "check` will refuse" in out
+    # A label, not a verdict -- `bands` must not turn a config edit into a
+    # false "band will misreport" finding.
+    assert "All bands look sound." in out
+
+
 def test_bands_orders_output_the_same_way_check_does(tmp_path, monkeypatch, capsys):
     """`bands` used to iterate targets-then-probes while `check` and `baseline`
     both go probe-then-target via `config.pairs()`, so the same multi-target,

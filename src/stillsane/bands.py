@@ -97,6 +97,13 @@ class ProbeBands:
     created: str
     n_samples: int
     signals: list[SignalBand] = field(default_factory=list)
+    #: True when this baseline's config hash no longer matches what the
+    #: current config would produce -- `check` will refuse to compare against
+    #: it. `inspect` happily recomputes bands from stored numbers regardless,
+    #: since nothing here is wrong about the *arithmetic*, but a clean report
+    #: on a baseline `check` is about to refuse reads as "this is fine" when
+    #: it is actually "this is about to error on the first real run".
+    stale: bool = False
 
     @property
     def suspect(self) -> list[SignalBand]:
@@ -242,6 +249,7 @@ def inspect(
     signals: Sequence[Signal],
     cfg: BandConfig,
     check_samples: int = 3,
+    stale: bool = False,
 ) -> ProbeBands:
     """Recompute every band this baseline would be judged against.
 
@@ -251,6 +259,13 @@ def inspect(
     doing it here is what finally puts them in front of the user. The capture-time
     warning could only ever see pairwise signals, so a floored `length_chars` had
     no way to be mentioned at all.
+
+    `stale` is the caller's call, not this function's: computing the expected
+    hash needs the probe/target config, which `inspect` deliberately does not
+    take -- it only ever reads what `stillsane baseline` already wrote to
+    disk. `capture_baseline` (via `runner.py`) never passes it, since the
+    baseline it inspects there was just written under the current config by
+    definition.
     """
     out: list[SignalBand] = []
     # What one check reduces to a median. A pairwise signal compares every current
@@ -287,6 +302,7 @@ def inspect(
         created=baseline.created,
         n_samples=len(baseline.usable),
         signals=out,
+        stale=stale,
     )
 
 
@@ -341,6 +357,14 @@ def render(probes: Sequence[ProbeBands], verbose: bool = False) -> str:
             f"{probe.probe_id} @ {probe.target_name}"
             f"   (v{probe.version}, {probe.n_samples} sample(s), captured {probe.created[:10]})"
         )
+        if probe.stale:
+            # A clean report on a baseline `check` is about to refuse reads
+            # as "this is fine" -- it is actually "recapture before this
+            # tells you anything about what check will do".
+            lines.append(
+                "  stale: config has changed since capture; `check` will refuse "
+                "this baseline until `stillsane baseline` recaptures it"
+            )
         if not probe.signals:
             lines.append("  no bands: baseline has no usable samples")
             lines.append("")
@@ -440,6 +464,7 @@ def payload(probes: Sequence[ProbeBands]) -> dict:
                 "version": p.version,
                 "created": p.created,
                 "samples": p.n_samples,
+                "stale": p.stale,
                 "bands": [
                     {
                         "signal": sb.signal,

@@ -280,6 +280,45 @@ def test_render_stays_quiet_when_sound(signals_for):
     assert "COLLAPSED" not in text
 
 
+def test_inspect_defaults_to_not_stale(signals_for):
+    """`capture_baseline` (via `runner.py`) never passes `stale` -- the
+    baseline it inspects there was just written under the current config, by
+    definition -- so the default must read as fresh.
+    """
+    pooled = {"semantic_distance": [0.05, 0.06, 0.07]}
+    report = inspect(baseline_with(pooled), signals_for(), CFG)
+    assert report.stale is False
+
+
+def test_render_names_a_stale_baseline(signals_for):
+    """`inspect` happily recomputes bands from stored numbers regardless of
+    whether the config that produced them still matches -- nothing about the
+    *arithmetic* is wrong. But a clean report on a baseline `check` is about
+    to refuse reads as "this is fine" when it is actually "recapture before
+    this tells you anything about what check will do".
+    """
+    pooled = {"semantic_distance": [0.05, 0.07, 0.06, 0.08, 0.055, 0.075]}
+    report = inspect(baseline_with(pooled), signals_for(), CFG, stale=True)
+    text = render([report])
+    assert "stale" in text
+    assert "check` will refuse" in text
+    # A label, not a verdict: staleness must not manufacture a false alarm.
+    assert "All bands look sound." in text
+
+
+def test_render_says_nothing_about_staleness_when_fresh(signals_for):
+    pooled = {"semantic_distance": [0.05, 0.07, 0.06, 0.08, 0.055, 0.075]}
+    report = inspect(baseline_with(pooled), signals_for(), CFG, stale=False)
+    assert "stale" not in render([report])
+
+
+def test_json_reports_staleness(signals_for):
+    pooled = {"semantic_distance": [0.05, 0.07, 0.06]}
+    report = inspect(baseline_with(pooled), signals_for(), CFG, stale=True)
+    data = json.loads(as_json([report]))
+    assert data["probes"][0]["stale"] is True
+
+
 def test_verbose_shows_sound_bands(signals_for):
     pooled = {"semantic_distance": [0.05, 0.07, 0.06, 0.08, 0.055, 0.075]}
     report = inspect(baseline_with(pooled), signals_for(), CFG)

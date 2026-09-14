@@ -24,7 +24,7 @@ from .bands import render as render_bands
 from .calibrate import as_json as calibrate_as_json
 from .calibrate import assess as assess_calibration
 from .calibrate import render as render_calibration
-from .config import Config, load_config
+from .config import Config, config_hash, load_config
 from .generate import (
     DEFAULT_MERGE_DISTANCE,
     cluster,
@@ -246,7 +246,8 @@ def cmd_bands(args: argparse.Namespace) -> int:
             missing.append(f"{probe.id} @ {target.name}")
             continue
         signals = build_probe_signals(probe.checks, watch_fingerprint=target.watch_fingerprint)
-        reports.append(inspect_bands(baseline, signals, cfg, probe.check_samples))
+        stale = baseline.config_hash != config_hash(probe, target, config.embedder)
+        reports.append(inspect_bands(baseline, signals, cfg, probe.check_samples, stale=stale))
 
     if not reports:
         if missing:

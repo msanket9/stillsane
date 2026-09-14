@@ -504,6 +504,21 @@ It is an estimate from one baseline rather than a measured rate, and it assumes 
 clean run looks like the baseline. That is the assumption the band already makes,
 so it adds no new leap, but a small baseline estimates it coarsely.
 
+It also names a baseline `check` is about to refuse. `bands` recomputes every band
+from stored numbers regardless of whether the config that produced them still
+matches -- there is nothing wrong with the arithmetic either way -- but a clean
+"all bands look sound" on a baseline whose config hash has since moved reads as
+"this is fine" when it is actually "recapture before this tells you anything
+about what `check` will do":
+
+```
+extract_invoice @ prod   (v1, 5 sample(s), captured 2026-08-04)
+  stale: config has changed since capture; `check` will refuse this baseline until `stillsane baseline` recaptures it
+```
+
+A label, not a verdict: it never turns into a suspect finding or a nonzero exit
+code on its own, even under `--strict`.
+
 `--strict` exits 2 when any band will misreport, for a CI job that should fail on
 a baseline this shape. `-v` shows every band rather than only the interesting ones.
 
