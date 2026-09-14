@@ -220,6 +220,13 @@ class ProbeVerdict:
     #: flaky setup into a silent one, which is the failure the retry was meant to
     #: make survivable rather than invisible.
     retries: int = 0
+    #: Set only by `check(..., against_stale=True)`: this probe's baseline hash
+    #: did not match, and the comparison ran anyway rather than refusing. The
+    #: verdict is capped at WARN and the pool was never updated -- see
+    #: `runner.check` -- and the report must say so on every line, since the
+    #: entire purpose of the flag is to never be mistaken for a real refusal
+    #: or a real drift verdict.
+    stale_comparison: bool = False
 
     @property
     def moved(self) -> list[SignalVerdict]:

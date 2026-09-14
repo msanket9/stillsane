@@ -32,37 +32,15 @@ import json
 import os
 import re
 import shutil
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..compare.pooling import Anchor
 from ..models import Sample
+from ._atomic import atomic_write as _atomic_write
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    """Write `content` to `path` so a reader never sees a partial file.
-
-    `variance.json` is rewritten on every clean check, and a crash or kill
-    mid-write leaves whatever `write_text` had flushed so far -- often
-    truncated, invalid JSON that `load` then raises on for every future check,
-    with no way back short of deleting the baseline by hand. Writing to a
-    sibling temp file first and `os.replace`-ing it into place is atomic on
-    the same filesystem: the old content survives intact until the new
-    content is fully written, so a crash mid-write loses only the write in
-    progress, never the file itself.
-
-    The temp name carries a random suffix rather than a fixed one so two
-    writers racing for the same path (`update_variance` runs outside the
-    version-claiming lock `save` uses) don't stomp each other's temp file
-    before either gets to `replace`.
-    """
-    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
-    tmp.write_text(content)
-    os.replace(tmp, path)
 
 
 def slug(value: str) -> str:

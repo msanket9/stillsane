@@ -115,9 +115,23 @@ def _excerpt_block(verdict: ProbeVerdict, paint: Painter, width: int = 76) -> li
     return lines
 
 
+#: The exact sentence `check --against-stale` promises on every line of a probe
+#: it ran anyway. Never softened, shortened or made conditional: the flag's
+#: entire safety case is that this cannot be mistaken for a real refusal or a
+#: real drift verdict, including by someone who only sees the tail of a
+#: truncated CI log.
+STALE_COMPARISON_NOTICE = (
+    "comparison against a baseline captured under a different config; "
+    "verdicts are indicative"
+)
+_STALE_SUFFIX = "  [stale-config, indicative]"
+
+
 def render_probe(verdict: ProbeVerdict, paint: Painter, verbose: bool = False) -> str:
     header = paint.level(f"{verdict.level.value.upper():<5}", verdict.level)
     lines = [f"{header}  {verdict.probe_id} @ {verdict.target_name}"]
+    if verdict.stale_comparison:
+        lines.append(f"  {STALE_COMPARISON_NOTICE}")
 
     shown = verdict.signals if verbose else verdict.moved
     for sv in shown:
@@ -144,6 +158,13 @@ def render_probe(verdict: ProbeVerdict, paint: Painter, verbose: bool = False) -
             lines.append("")
             lines.append(paint.dim(f"  -> {verdict.judge_note}"))
 
+    if verdict.stale_comparison:
+        # Repeated on every non-blank line, not just the notice above: a
+        # truncated CI log view that scrolls past the top of this block must
+        # not leave a bare "WARN ... semantic_distance ..." row that reads as
+        # an ordinary drift report.
+        lines = [line + _STALE_SUFFIX if line.strip() else line for line in lines]
+
     return "\n".join(lines)
 
 
@@ -161,8 +182,15 @@ def render(result: RunResult, verbose: bool = False, colour: bool | None = None)
         # A pass that needed a retry is the exception, and it is the case the note
         # exists for: the endpoint dropped a connection and the run survived anyway.
         # Taking the one-line shortcut there would hide it precisely when nothing
-        # else in the output is going to mention it.
-        if verdict.level is Level.PASS and not verbose and not verdict.retries:
+        # else in the output is going to mention it. A stale comparison is the
+        # same kind of exception: collapsing it to one line would drop the
+        # notice that this "PASS" is not measured against the current config.
+        if (
+            verdict.level is Level.PASS
+            and not verbose
+            and not verdict.retries
+            and not verdict.stale_comparison
+        ):
             blocks.append(
                 f"{paint.level('PASS ', Level.PASS)}  {verdict.probe_id} @ {verdict.target_name}"
             )

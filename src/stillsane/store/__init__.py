@@ -2,5 +2,14 @@
 
 from .baseline import Baseline, BaselineMismatch, BaselineStore, slug
 from .history import History
+from .runs import DEFAULT_KEEP, RunSampleStore
 
-__all__ = ["Baseline", "BaselineMismatch", "BaselineStore", "History", "slug"]
+__all__ = [
+    "DEFAULT_KEEP",
+    "Baseline",
+    "BaselineMismatch",
+    "BaselineStore",
+    "History",
+    "RunSampleStore",
+    "slug",
+]

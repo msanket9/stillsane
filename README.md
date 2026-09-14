@@ -406,6 +406,30 @@ semantic_distance  summarise_incident @ claude   (most recent first)
 remember signal names to look at your own data. Everything lives in
 `.stillsane/history.sqlite`.
 
+**What did the model actually say?** `history` has numbers, not text --
+investigating an alert from a few hours ago used to mean finding whatever log
+captured that run's stdout, which for a scheduled job usually means digging
+through CI. Every `check` run now keeps its own current-run samples under
+`.stillsane/runs/<run_id>/`, using the same run id `history` lists above:
+
+```bash
+stillsane history --run 8a589970b3ad
+```
+
+```
+extract_invoice @ prod
+  1. Sure! Here you go: {"total": 1240.50, "due_date": "2026-07-01"}. Anything else?
+  2. Sure! Here you go: {"total": 1240.50, "due_date": "2026-07-01"}. Anything else?
+  3. Sure! Here you go: {"total": 1240.50, "due_date": "2026-07-01"}. Anything else?
+```
+
+Only the last 50 runs are kept, oldest pruned first, so a `watch` loop cannot
+grow this without bound. The full decoded response body is not part of it
+either, for the same reason as `store_raw` above -- these files are not meant
+to be committed, but they are still local disk, and a `type: http` target
+against your own app can carry tenant data in a response the same way a
+baseline can.
+
 ### Inspecting the bands
 
 `check` tells you whether a probe moved. `stillsane bands` answers the question
@@ -816,6 +840,23 @@ Two things it relies on:
   only the extracted text and metadata a check actually compares against.
 - **A daily schedule is the point.** Provider-side model changes arrive without
   warning; finding out within a day is the entire product.
+
+**Gating a PR that edits a probe.** A prompt edit changes the config hash, so an
+ordinary `check` refuses to compare against the old baseline -- correctly, since
+comparing new output to an old baseline is not drift, it is the edit doing what it
+was asked to do. That also means a PR check gating on plain `check` can never
+actually review the edit; it just blocks on "recapture first, then commit, then
+push again."
+
+`stillsane check --against-stale` compares anyway. Every verdict it produces is
+capped at WARN (never DRIFT, never the ERROR exit code) and never updates the
+baseline's variance pool, and the report says so on every line: `comparison
+against a baseline captured under a different config; verdicts are indicative`.
+Exit code is always `0` or `2`. It exists to let a reviewer see the diff a prompt
+edit produced, not to replace `stillsane baseline` -- a real baseline still needs
+capturing before the next scheduled run. Do not wire it up as the only check on
+a probe-editing PR without also requiring a recapture commit: the flag makes an
+edit visible, it does not validate it.
 
 ---
 

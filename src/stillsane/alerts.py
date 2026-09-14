@@ -39,6 +39,7 @@ def payload_for(result: RunResult) -> dict:
                 # actually parses -- did not, which made it invisible to exactly the
                 # consumer retries were meant to keep informed.
                 "retries": p.retries,
+                "stale_comparison": p.stale_comparison,
                 "moved": [
                     {
                         "signal": sv.signal,

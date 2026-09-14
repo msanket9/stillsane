@@ -20,7 +20,7 @@ from stillsane.config import Config
 from stillsane.models import Level
 from stillsane.report import render
 from stillsane.runner import capture_baseline, check
-from stillsane.store import BaselineStore, History
+from stillsane.store import BaselineStore, History, RunSampleStore
 
 STABLE = [
     '{"total": 1240.50, "due_date": "2026-07-01"}',
@@ -93,10 +93,10 @@ def run_baseline(config, store, texts, fingerprint="fp_a4f2b1"):
     return asyncio.run(go())
 
 
-def run_check(config, store, history, texts, fingerprint="fp_a4f2b1"):
+def run_check(config, store, history, texts, fingerprint="fp_a4f2b1", against_stale=False):
     async def go():
         async with make_client(texts, fingerprint) as client:
-            return await check(config, store, history, client=client)
+            return await check(config, store, history, client=client, against_stale=against_stale)
 
     return asyncio.run(go())
 
@@ -236,6 +236,170 @@ def test_editing_the_prompt_refuses_to_compare(env):
     result = run_check(edited, store, history, STABLE)
     assert result.level is Level.ERROR
     assert "different prompt" in result.probes[0].signals[0].detail
+
+
+def test_against_stale_compares_anyway_and_caps_at_warn(env):
+    """The escape hatch: a PR that edits a probe changes the config hash, so an
+    ordinary `check` refuses to compare -- correct for a scheduled run, but it
+    means the PR-gating workflow the README's own example invites can never
+    actually catch anything, since the edit always looks like "recapture
+    first" rather than a result. `--against-stale` runs the comparison
+    anyway, but must never come back as DRIFT or ERROR -- the whole promise is
+    "indicative", not "a real verdict".
+    """
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+
+    edited = Config.model_validate(
+        {**CONFIG, "probes": [{**CONFIG["probes"][0], "prompt": "A completely different ask."}]}
+    )
+    result = run_check(edited, store, history, DRIFTED, against_stale=True)
+
+    assert result.level is Level.WARN
+    probe = result.probes[0]
+    assert probe.stale_comparison is True
+    assert probe.level is Level.WARN
+
+
+def test_against_stale_never_updates_the_pool(env):
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    before = store.load("prod", "extract_invoice").pooled
+
+    edited = Config.model_validate(
+        {**CONFIG, "probes": [{**CONFIG["probes"][0], "prompt": "A completely different ask."}]}
+    )
+    run_check(edited, store, history, STABLE, against_stale=True)
+
+    after = store.load("prod", "extract_invoice").pooled
+    assert after == before
+
+
+def test_against_stale_notice_is_on_every_line(env):
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+
+    edited = Config.model_validate(
+        {**CONFIG, "probes": [{**CONFIG["probes"][0], "prompt": "A completely different ask."}]}
+    )
+    result = run_check(edited, store, history, DRIFTED, against_stale=True)
+    text = render(result, verbose=True, colour=False)
+
+    content_lines = [ln for ln in text.splitlines() if ln.strip()]
+    assert content_lines, "expected a non-empty report"
+    # Every line belongs to the stale-compared probe except the trailing
+    # separator and summary, which are global to the whole run.
+    assert all("indicative" in ln for ln in content_lines[:-2]), text
+
+
+def test_against_stale_caps_every_signal_not_just_the_aggregate(env):
+    """`verdict.level` used to get capped to WARN while the individual
+    `SignalVerdict.level` values underneath it stayed at DRIFT -- so the JSON
+    payload's `moved[].level` (and a coloured terminal line, which keys off
+    the signal's own level) could still say "drift" for a signal, directly
+    under a probe whose own level claimed "warn". A machine reading the
+    per-signal level rather than the headline would see exactly the real
+    drift verdict this flag exists to rule out.
+    """
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+
+    edited = Config.model_validate(
+        {**CONFIG, "probes": [{**CONFIG["probes"][0], "prompt": "A completely different ask."}]}
+    )
+    result = run_check(edited, store, history, DRIFTED, against_stale=True)
+    probe = result.probes[0]
+
+    assert probe.level is Level.WARN
+    assert all(sv.level.rank <= Level.WARN.rank for sv in probe.signals), [
+        (sv.signal, sv.level) for sv in probe.signals
+    ]
+
+    data = payload_for(result)
+    assert all(m["level"] != "drift" for m in data["probes"][0]["moved"])
+
+
+def test_an_ordinary_check_is_unaffected_by_the_against_stale_flag(env):
+    """The flag must never change behaviour for a probe whose config hash
+    still matches -- it only ever widens what a *mismatched* hash does.
+    """
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    result = run_check(config, store, history, DRIFTED, against_stale=True)
+    assert result.probes[0].stale_comparison is False
+    assert result.level is Level.DRIFT
+
+
+# --- Per-run samples -------------------------------------------------------
+
+
+def test_check_persists_current_run_samples_under_the_history_run_id(env, tmp_path):
+    """`history` records numbers; the text the model actually wrote used to
+    exist only in whatever log captured that run's stdout. `check` now keeps
+    it, keyed by the same `run_id` `history.record` assigns, so it can be
+    found later without needing the original log.
+    """
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    run_samples = RunSampleStore(tmp_path)
+
+    async def go():
+        async with make_client(DRIFTED) as client:
+            return await check(config, store, history, client=client, run_samples=run_samples)
+
+    result = asyncio.run(go())
+    run_id = history.recent(limit=1)[0][0]
+
+    loaded = run_samples.load(run_id)
+    assert loaded is not None
+    assert len(loaded) == config.probes[0].check_samples
+    assert all(s.text in DRIFTED for s in loaded)
+    assert result.probes[0].probe_id == loaded[0].probe_id == "extract_invoice"
+
+
+def test_check_without_a_run_sample_store_does_not_error(env):
+    """`run_samples` is optional -- a caller that does not pass one (or code
+    running before this feature existed) must see no change in behaviour.
+    """
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    result = run_check(config, store, history, STABLE)
+    assert result.level is Level.PASS
+
+
+def test_history_run_prints_what_the_model_said(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(CONFIG))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    capsys.readouterr()
+
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(DRIFTED)
+    )
+    assert cli.main(["-c", str(config_path), "check"]) == 1
+    capsys.readouterr()
+
+    code = cli.main(["-c", str(config_path), "history"])
+    assert code == 0
+    history_out = capsys.readouterr().out
+    run_id = history_out.splitlines()[1].split()[-1]
+
+    code = cli.main(["-c", str(config_path), "history", "--run", run_id])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "extract_invoice @ prod" in out
+    assert any(text.splitlines()[0] in out for text in DRIFTED)
+
+
+def test_history_run_reports_a_missing_id_clearly(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(CONFIG))
+    code = cli.main(["-c", str(config_path), "history", "--run", "does-not-exist"])
+    assert code == 1
+    assert "does-not-exist" in capsys.readouterr().err
 
 
 def test_a_dead_endpoint_is_an_error_not_drift(env):
@@ -544,6 +708,33 @@ def test_fail_on_warn_promotes_the_exit_code(env):
 
     assert exit_code_for(result, fail_on_warn=False) == 2
     assert exit_code_for(result, fail_on_warn=True) == 1
+
+
+def test_against_stale_exit_code_ignores_fail_on_warn(tmp_path, monkeypatch):
+    """`--against-stale` promises exit 0 or 2 only. `fail_on_warn` escalating a
+    WARN it produced to the DRIFT exit code would break that promise for
+    anyone who has `fail_on_warn: true` set for unrelated reasons.
+    """
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(
+        yaml.safe_dump({**CONFIG, "alerts": {"fail_on_warn": True}})
+    )
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+
+    edited = {
+        **CONFIG,
+        "alerts": {"fail_on_warn": True},
+        "probes": [{**CONFIG["probes"][0], "prompt": "A completely different ask."}],
+    }
+    config_path.write_text(yaml.safe_dump(edited))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(DRIFTED)
+    )
+    code = cli.main(["-c", str(config_path), "check", "--against-stale"])
+    assert code == 2
 
 
 # --- CLI ------------------------------------------------------------------

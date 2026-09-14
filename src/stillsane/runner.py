@@ -34,7 +34,7 @@ from .judge import apply as judge_apply
 from .models import Level, ProbeVerdict, RunResult, Sample, SignalVerdict
 from .signals import build_signals, default_embedder
 from .signals.base import PairwiseSignal
-from .store import Baseline, BaselineStore, History
+from .store import Baseline, BaselineStore, History, RunSampleStore
 from .targets import DEFAULT_CONCURRENCY, Target, build_target, collect
 
 
@@ -233,16 +233,38 @@ async def check(
     history: History | None = None,
     only: set[str] | None = None,
     client: httpx.AsyncClient | None = None,
+    against_stale: bool = False,
+    run_samples: RunSampleStore | None = None,
 ) -> RunResult:
-    """Sample every probe, compare against its baseline, and grow clean pools."""
+    """Sample every probe, compare against its baseline, and grow clean pools.
+
+    `against_stale` is the escape hatch for a PR that edits a probe: normally a
+    changed config hash refuses to compare at all (comparing new output against
+    an old baseline is not "drift", it is the edit doing exactly what it was
+    asked to do), which is correct for a scheduled run but useless for a CI
+    check whose whole point was to catch the edit before it lands -- the PR
+    just gets blocked on a local recapture instead. With the flag, the
+    comparison runs anyway, but every affected verdict is capped at WARN
+    (never DRIFT, never ERROR) and never grows the variance pool, since the
+    numbers it produces describe an edit, not a measurement. See
+    `ProbeVerdict.stale_comparison`, which the report keys off of to say so on
+    every line -- the flag must never be mistakable for a real refusal or a
+    real drift verdict, or for a comparison anyone would want as the default.
+
+    `run_samples`, when given, records what each probe's current samples
+    actually said under the run's own id -- see `RunSampleStore` -- so
+    `stillsane history --run <id>` can show it later without anyone needing
+    the original log this run printed to.
+    """
     plans = [p for p in plans_for(config) if not only or p.probe.id in only]
     embedder = default_embedder(config.embedder)
     band_cfg = config.thresholds.to_band_config()
+    sampled: list[tuple[Plan, list[Sample]]] = []
 
     # Resolve baselines before spending anything on the network. A missing or stale
     # baseline is a config problem, and paying for samples to discover it would be
     # rude.
-    runnable: list[tuple[Plan, Baseline]] = []
+    runnable: list[tuple[Plan, Baseline, bool]] = []
     verdicts: list[ProbeVerdict] = []
     for plan in plans:
         baseline = store.load(plan.target_config.name, plan.probe.id)
@@ -254,24 +276,27 @@ async def check(
                 )
             )
         elif baseline.config_hash != plan.expected_hash:
-            verdicts.append(
-                _error_verdict(
-                    plan,
-                    f"baseline v{baseline.version} was captured under a different "
-                    "prompt, model, check set or embedder; run `stillsane baseline` "
-                    "to recapture",
+            if against_stale and baseline.usable:
+                runnable.append((plan, baseline, True))
+            else:
+                verdicts.append(
+                    _error_verdict(
+                        plan,
+                        f"baseline v{baseline.version} was captured under a different "
+                        "prompt, model, check set or embedder; run `stillsane baseline` "
+                        "to recapture",
+                    )
                 )
-            )
         elif not baseline.usable:
             verdicts.append(_error_verdict(plan, "stored baseline has no usable samples"))
         else:
-            runnable.append((plan, baseline))
+            runnable.append((plan, baseline, False))
 
     if runnable:
         batches = await _sample_all(
-            [p for p, _ in runnable], [p.probe.check_samples for p, _ in runnable], client
+            [p for p, _, _ in runnable], [p.probe.check_samples for p, _, _ in runnable], client
         )
-        for (plan, baseline), samples in zip(runnable, batches, strict=True):
+        for (plan, baseline, stale), samples in zip(runnable, batches, strict=True):
             signals = build_signals(
                 plan.probe.checks, embedder, plan.target_config.watch_fingerprint
             )
@@ -292,9 +317,32 @@ async def check(
             # it is a fact about reaching the endpoint, and the comparison layer
             # deliberately knows nothing about transport.
             verdict.retries = sum(max(0, s.attempts - 1) for s in samples)
+            sampled.append((plan, samples))
+
+            if stale:
+                verdict.stale_comparison = True
+                # Cap every signal, not just the aggregate: `verdict.level` is
+                # `Level.worst(sv.level for sv in signals)`, so leaving a
+                # per-signal level at DRIFT while only capping the aggregate
+                # left it sitting in `verdict.signals` (and so in the JSON
+                # payload's `moved[].level`, and in the coloured terminal
+                # line, which keys off the signal's own level) as an
+                # uncapped "drift" underneath a probe that claims "warn" --
+                # exactly the "mistaken for a real drift verdict" outcome
+                # this flag exists to rule out for a machine reading the
+                # payload rather than the headline.
+                for sv in verdict.signals:
+                    if sv.level.rank > Level.WARN.rank:
+                        sv.level = Level.WARN
+                if verdict.level.rank > Level.WARN.rank:
+                    verdict.level = Level.WARN
             verdicts.append(verdict)
 
-            if is_clean(verdict):
+            # Pooling grows the variance estimate from a measurement; a stale
+            # comparison never took one -- the baseline it ran against is not
+            # the one this config now produces -- so it must never feed back
+            # into a pool the *next*, properly-baselined check will trust.
+            if not stale and is_clean(verdict):
                 evidence = within_run_evidence(signals, [s for s in samples if s.ok])
                 if evidence:
                     new_pooled, new_anchors = pool_from_run(
@@ -311,5 +359,9 @@ async def check(
 
     result = build_run(verdicts)
     if history:
-        history.record(result)
+        run_id = history.record(result)
+        if run_samples and sampled:
+            for plan, samples in sampled:
+                run_samples.append(run_id, samples, store_raw=plan.target_config.store_raw)
+            run_samples.prune()
     return result

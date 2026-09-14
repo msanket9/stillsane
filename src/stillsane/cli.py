@@ -39,7 +39,7 @@ from .signals import default_embedder
 from .status import as_json as as_status_json
 from .status import assess, parse_every
 from .status import render as render_status
-from .store import BaselineStore, History
+from .store import DEFAULT_KEEP, BaselineStore, History, RunSampleStore
 
 DEFAULT_CONFIG = "stillsane.yaml"
 
@@ -113,6 +113,11 @@ def _load(path: str) -> Config:
 def _store(config: Config, config_path: str) -> tuple[BaselineStore, History]:
     root = Path(config_path).resolve().parent / config.state_dir
     return BaselineStore(root), History(root)
+
+
+def _run_sample_store(config: Config, config_path: str) -> RunSampleStore:
+    root = Path(config_path).resolve().parent / config.state_dir
+    return RunSampleStore(root)
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -356,6 +361,36 @@ def cmd_history(args: argparse.Namespace) -> int:
     config = _load(args.config)
     _, history = _store(config, args.config)
 
+    if args.run:
+        run_samples = _run_sample_store(config, args.config)
+        samples = run_samples.load(args.run)
+        if samples is None:
+            print(
+                f"No samples kept for run {args.run!r}. Either it predates "
+                f"`--run` support, it aged out (only the last {DEFAULT_KEEP} "
+                "runs are kept), or the id is wrong -- `stillsane history` "
+                "lists recent ids.",
+                file=sys.stderr,
+            )
+            return 1
+
+        groups: dict[tuple[str, str], list] = {}
+        for sample in samples:
+            groups.setdefault((sample.probe_id, sample.target_name), []).append(sample)
+
+        for (probe_id, target_name), group in groups.items():
+            print(f"{probe_id} @ {target_name}")
+            for i, sample in enumerate(group, 1):
+                if not sample.ok:
+                    print(f"  {i}. [error] {sample.error}")
+                    continue
+                lines = sample.text.splitlines()[:6] or [""]
+                print(f"  {i}. {lines[0][:76]}")
+                for line in lines[1:]:
+                    print(f"     {line[:76]}")
+            print()
+        return 0
+
     if args.signal and not (args.probe and args.target):
         # Without both, the query would quietly match nothing and read as "no
         # history" rather than "you did not say which probe".
@@ -423,7 +458,14 @@ def _run_check(args: argparse.Namespace) -> int:
             print(f"No probes matched: {', '.join(sorted(unknown))}", file=sys.stderr)
             return EXIT_CODES[Level.ERROR]
 
-    result = asyncio.run(check(config, store, history, only=only))
+    against_stale = getattr(args, "against_stale", False)
+    run_samples = _run_sample_store(config, args.config)
+    result = asyncio.run(
+        check(
+            config, store, history, only=only,
+            against_stale=against_stale, run_samples=run_samples,
+        )
+    )
 
     if args.json:
         print(as_json(result))
@@ -432,7 +474,19 @@ def _run_check(args: argparse.Namespace) -> int:
 
     if result.level is not Level.PASS:
         send(result, config.alerts.webhook, config.alerts.slack_webhook)
-    return exit_code_for(result, config.alerts.fail_on_warn)
+
+    fail_on_warn = config.alerts.fail_on_warn
+    # `--against-stale` promises exit 0 or 2 only. `fail_on_warn` escalating a
+    # WARN to the DRIFT exit code is exactly the escalation that promise rules
+    # out for a purely indicative result -- a genuine WARN mixed into the same
+    # run still escalates normally.
+    if (
+        fail_on_warn
+        and result.level is Level.WARN
+        and all(p.stale_comparison for p in result.probes if p.level is not Level.PASS)
+    ):
+        fail_on_warn = False
+    return exit_code_for(result, fail_on_warn)
 
 
 def cmd_check(args: argparse.Namespace) -> int:
@@ -550,6 +604,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_check.add_argument("--probe", action="append", help="limit to this probe id (repeatable)")
     p_check.add_argument("-v", "--verbose", action="store_true", help="show signals that passed")
     p_check.add_argument("--json", action="store_true", help="machine-readable output")
+    p_check.add_argument(
+        "--against-stale",
+        action="store_true",
+        help=(
+            "compare even when the baseline's config hash no longer matches "
+            "(a PR that edited a probe, say). Every affected verdict is capped "
+            "at WARN and never updates the baseline's variance pool -- see the "
+            "README before wiring this into a required check"
+        ),
+    )
     p_check.set_defaults(func=cmd_check)
 
     p_bands = sub.add_parser(
@@ -601,6 +665,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--signals", action="store_true", help="list every signal that has recorded history"
     )
     p_hist.add_argument("--limit", type=int, default=20, help="rows to show (default: 20)")
+    p_hist.add_argument(
+        "--run",
+        metavar="RUN_ID",
+        help="show what each probe's samples actually said in this run (see the run ids above)",
+    )
     p_hist.set_defaults(func=cmd_history)
 
     p_watch = sub.add_parser(
