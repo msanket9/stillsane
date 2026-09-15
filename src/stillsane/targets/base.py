@@ -82,6 +82,19 @@ def dotted_get(data: Any, path: str) -> Any:
     return current
 
 
+def _whole_value_match(value: str, variables: dict[str, Any]) -> tuple[bool, Any]:
+    """Is `value` *exactly* one `{{name}}` placeholder, nothing else around it?
+
+    Broken out from `render_template` because a list needs the same check to
+    decide whether to splice a list-typed replacement in place (see below),
+    not just substitute it.
+    """
+    for key, replacement in variables.items():
+        if value == "{{" + key + "}}":
+            return True, replacement
+    return False, None
+
+
 def render_template(value: Any, variables: dict[str, Any]) -> Any:
     """Substitute `{{name}}` placeholders throughout a nested structure.
 
@@ -93,19 +106,35 @@ def render_template(value: Any, variables: dict[str, Any]) -> Any:
     converting a non-string variable to its `str()` form; that only matters
     for `turns`, which is documented as a whole-value placeholder for exactly
     this reason.
+
+    A list element that is itself a whole-value placeholder resolving to a
+    list is spliced into the surrounding list rather than nested inside it --
+    `messages: ["{{turns}}", {role: user, content: "{{prompt}}"}]` is the
+    natural way to write "scripted history, then the live turn" given every
+    other `messages` example in this codebase already writes the array out by
+    hand, and a plain per-element substitution would instead produce a
+    messages array whose first element is itself an array, which no API
+    accepts.
     """
     if isinstance(value, str):
-        for key, replacement in variables.items():
-            placeholder = "{{" + key + "}}"
-            if value == placeholder:
-                return replacement
+        matched, replacement = _whole_value_match(value, variables)
+        if matched:
+            return replacement
         for key, replacement in variables.items():
             value = value.replace("{{" + key + "}}", str(replacement))
         return value
     if isinstance(value, dict):
         return {k: render_template(v, variables) for k, v in value.items()}
     if isinstance(value, list):
-        return [render_template(v, variables) for v in value]
+        out: list[Any] = []
+        for item in value:
+            if isinstance(item, str):
+                matched, replacement = _whole_value_match(item, variables)
+                if matched and isinstance(replacement, list):
+                    out.extend(replacement)
+                    continue
+            out.append(render_template(item, variables))
+        return out
     return value
 
 

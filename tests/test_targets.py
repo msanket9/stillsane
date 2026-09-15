@@ -588,6 +588,44 @@ def test_http_target_turns_defaults_to_an_empty_list():
     assert seen["body"] == {"messages": []}
 
 
+def test_http_target_combines_scripted_turns_with_the_live_prompt():
+    """`messages: "{{turns}}"` alone never sends the live prompt at all --
+    `turns` is documented as scripted history only, excluding the live turn.
+    The documented, working pattern puts `{{turns}}` alongside an explicit
+    final message built from `{{prompt}}`; this must produce one flat
+    `messages` array, not an array whose first element is itself an array."""
+    target = build_target(
+        TargetConfig(
+            name="app", type="http", base_url="https://app.example.com",
+            body={"messages": ["{{turns}}", {"role": "user", "content": "{{prompt}}"}]},
+        )
+    )
+    probe = ProbeConfig(
+        id="p", prompt="what's the total?",
+        turns=[
+            {"role": "user", "content": "invoice text"},
+            {"role": "assistant", "content": "ok, what do you need?"},
+        ],
+    )
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"ok": True})
+
+    call(target, probe, handler)
+    assert seen["body"] == {
+        "messages": [
+            {"role": "user", "content": "invoice text"},
+            {"role": "assistant", "content": "ok, what do you need?"},
+            {"role": "user", "content": "what's the total?"},
+        ]
+    }
+    assert all(isinstance(m, dict) for m in seen["body"]["messages"])
+
+
 # --- Helpers --------------------------------------------------------------
 
 
@@ -635,6 +673,46 @@ def test_render_template_prompt_and_system_are_unaffected_by_the_whole_value_cas
     substitution look identical for them -- this pins that nothing regressed."""
     out = render_template({"q": "{{prompt}}", "s": "sys: {{system}}"}, {"prompt": "P", "system": "S"})
     assert out == {"q": "P", "s": "sys: S"}
+
+
+def test_render_template_splices_a_list_placeholder_into_a_surrounding_list():
+    """A list element that is itself a whole-value placeholder resolving to a
+    list must be spliced flat into the surrounding list, not nested as a
+    single element -- `messages: ["{{turns}}", {role: user, content:
+    "{{prompt}}"}]` has to produce one flat array of role/content objects, the
+    only shape a real chat API accepts.
+
+    Confirmed broken before this fix: the naive per-element substitution
+    nested the list under `messages[0]` instead, which is not a valid
+    `messages` array for any provider.
+    """
+    turns = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
+    out = render_template(
+        ["{{turns}}", {"role": "user", "content": "{{prompt}}"}],
+        {"turns": turns, "prompt": "live"},
+    )
+    assert out == [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+        {"role": "user", "content": "live"},
+    ]
+    assert all(isinstance(item, dict) for item in out)
+
+
+def test_render_template_splicing_an_empty_list_leaves_only_the_other_elements():
+    out = render_template(
+        ["{{turns}}", {"role": "user", "content": "{{prompt}}"}],
+        {"turns": [], "prompt": "live"},
+    )
+    assert out == [{"role": "user", "content": "live"}]
+
+
+def test_render_template_a_string_valued_placeholder_in_a_list_still_just_substitutes():
+    """Only a *list*-valued whole-value placeholder splices. A string-valued
+    one (`{{prompt}}`) in a list must still simply substitute in place, not
+    be treated as something to flatten."""
+    out = render_template(["{{prompt}}", "literal"], {"prompt": "hi"})
+    assert out == ["hi", "literal"]
 
 
 # --- response_path block filtering ----------------------------------------

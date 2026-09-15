@@ -765,15 +765,26 @@ stopped meaning anything, which is why history is scripted rather than
 replayed from a real prior run. Editing `turns` invalidates the baseline, the
 same as editing `prompt`.
 
-For `type: http`, `{{turns}}` is a whole-value placeholder: used as an entire
-field's value (not mixed into surrounding text), it splices in the real list
-of `{role, content}` objects rather than stringifying it, since OpenAI's and
-Anthropic's `messages` arrays share that shape:
+For `type: http`, `{{turns}}` is `turns` alone -- the scripted history, not
+including the live turn -- so it belongs alongside an explicit final message
+built from `{{prompt}}`, the same way every other `messages` array in this
+README is written out by hand:
 
 ```yaml
 body:
-  messages: "{{turns}}"
+  messages:
+    - "{{turns}}"
+    - role: user
+      content: "{{prompt}}"
 ```
+
+As a list element, `"{{turns}}"` splices the real list of `{role, content}`
+objects into `messages` in place, rather than nesting one array inside another
+-- so the result is a single flat array: scripted history, then the live
+turn, exactly what OpenAI's and Anthropic's `messages` arrays expect. Used as
+an entire field's value on its own (`messages: "{{turns}}"`), it substitutes
+just the scripted history with nothing live in it at all, which is rarely
+what you want -- the form above is the one to reach for.
 
 Not supported on `type: claude_code`: the `claude` CLI's `-p` mode has no flag
 to inject prior assistant turns, so a probe using `turns` must be scoped away
