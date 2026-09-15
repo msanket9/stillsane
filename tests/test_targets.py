@@ -626,6 +626,49 @@ def test_http_target_combines_scripted_turns_with_the_live_prompt():
     assert all(isinstance(m, dict) for m in seen["body"]["messages"])
 
 
+def test_http_target_turns_alongside_a_top_level_system_field():
+    """The README's Anthropic-shaped example carries `system` as its own
+    top-level field, separate from `messages` -- the pairing this feature
+    actually needs to support for a real provider, not just the OpenAI-style
+    in-array system message covered above."""
+    target = build_target(
+        TargetConfig(
+            name="claude", type="http", base_url="https://api.anthropic.com",
+            path="/v1/messages",
+            body={
+                "model": "claude-opus-5",
+                "system": "{{system}}",
+                "messages": ["{{turns}}", {"role": "user", "content": "{{prompt}}"}],
+            },
+        )
+    )
+    probe = ProbeConfig(
+        id="p", prompt="what's the total?", system="be terse",
+        turns=[
+            {"role": "user", "content": "invoice text"},
+            {"role": "assistant", "content": "ok, what do you need?"},
+        ],
+    )
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"ok": True})
+
+    call(target, probe, handler)
+    assert seen["body"] == {
+        "model": "claude-opus-5",
+        "system": "be terse",
+        "messages": [
+            {"role": "user", "content": "invoice text"},
+            {"role": "assistant", "content": "ok, what do you need?"},
+            {"role": "user", "content": "what's the total?"},
+        ],
+    }
+
+
 # --- Helpers --------------------------------------------------------------
 
 
