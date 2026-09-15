@@ -23,11 +23,26 @@ SLACK_LIMIT = 2800
 
 def payload_for(result: RunResult) -> dict:
     """Generic JSON body. Structured, so a receiver can route on it."""
+    total_calls = sum(p.total_calls for p in result.probes)
+    known_calls = sum(p.cost_known_calls for p in result.probes)
+    total_cost = (
+        sum(p.cost_usd for p in result.probes if p.cost_usd is not None)
+        if known_calls
+        else None
+    )
     return {
         "tool": "stillsane",
         "level": result.level.value,
         "exit_code": result.exit_code,
         "finished": result.finished.isoformat() if result.finished else None,
+        # "Near-zero running cost" is a claim a CI pipeline parsing this JSON
+        # cannot verify from `level`/`exit_code` alone. `cost_usd` is `None`
+        # (not `0.0`) when nothing reported a cost, same reason the text
+        # report omits the line entirely rather than printing a fabricated
+        # `$0.0000` -- most gateways never report cost at all.
+        "calls": total_calls,
+        "cost_usd": total_cost,
+        "cost_known_calls": known_calls,
         "probes": [
             {
                 "probe": p.probe_id,
@@ -40,6 +55,9 @@ def payload_for(result: RunResult) -> dict:
                 # consumer retries were meant to keep informed.
                 "retries": p.retries,
                 "stale_comparison": p.stale_comparison,
+                "total_calls": p.total_calls,
+                "cost_usd": p.cost_usd,
+                "cost_known_calls": p.cost_known_calls,
                 "moved": [
                     {
                         "signal": sv.signal,

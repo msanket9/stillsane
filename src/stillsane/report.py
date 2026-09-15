@@ -206,7 +206,34 @@ def render(result: RunResult, verbose: bool = False, colour: bool | None = None)
 
     separator = "-" * 60
     tail = paint.level(f"{result.level.value.upper()}", result.level)
-    return "\n\n".join(blocks) + f"\n\n{separator}\n{summary}   ->  {tail}"
+    footer = f"\n\n{separator}\n{summary}   ->  {tail}"
+    cost_line = _cost_footer(result)
+    if cost_line:
+        footer += f"\n{paint.dim(cost_line)}"
+    return "\n\n".join(blocks) + footer
+
+
+def _cost_footer(result: RunResult) -> str | None:
+    """"Near-zero running cost" is a claim the reader cannot check from the
+    output. `Sample.cost_usd` is already on every sample where a gateway or
+    the `claude` CLI reports it, so sum it here rather than leave the claim
+    unverifiable.
+
+    Omitted entirely when nothing reported a cost -- most gateways do not --
+    since a confident `$0.0000` would be exactly the fabricated number this
+    module's own formatting rule exists to rule out. When only some calls
+    priced themselves, the total is a partial sum and says so rather than
+    reading as the run's real cost.
+    """
+    total_calls = sum(p.total_calls for p in result.probes)
+    known_calls = sum(p.cost_known_calls for p in result.probes)
+    if not known_calls:
+        return None
+    total_cost = sum(p.cost_usd for p in result.probes if p.cost_usd is not None)
+    if known_calls == total_calls:
+        calls = "call" if total_calls == 1 else "calls"
+        return f"this run: {total_calls} {calls}, ${total_cost:.4f}"
+    return f"this run: ${total_cost:.4f} across {known_calls} of {total_calls} calls"
 
 
 def render_plain(result: RunResult, verbose: bool = False) -> str:

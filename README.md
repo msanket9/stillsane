@@ -727,6 +727,20 @@ the baseline. Embeddings run locally and cost nothing. The LLM judge is opt-in a
 only fires when a band has already been crossed, so a normal run spends nothing
 beyond the probe calls themselves.
 
+That claim is checkable, not just asserted: `check` sums `cost_usd` across every
+sample where a gateway or the `claude` CLI reported one -- the judge's own call
+included, on the runs where it fires -- and prints the total in the footer and in
+`--json`'s payload (`calls`, `cost_usd`, `cost_known_calls`):
+
+```
+this run: 9 calls, $0.0123
+```
+
+Omitted entirely when nothing reported a cost, which is most gateways -- a
+confident `$0.0000` would be a fabricated number, not a measurement. When only
+some calls priced themselves, the line says so rather than reading as a total:
+`this run: $0.0123 across 6 of 9 calls`.
+
 ### Checks
 
 | Check | Meaning |

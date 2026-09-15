@@ -43,7 +43,10 @@ JUDGE_BLOCK = {"base_url": "https://judge.example.com/v1", "model": "judge-model
 _RealAsyncClient = httpx.AsyncClient
 
 
-def make_client(texts, judge_reply: str | None = None, judge_status: int = 200):
+def make_client(
+    texts, judge_reply: str | None = None, judge_status: int = 200,
+    probe_cost: float | None = None, judge_cost: float | None = None,
+):
     """Routes probe traffic to a fake provider and judge traffic to a fake judge."""
     cycle = itertools.cycle(texts)
     calls = {"probe": 0, "judge": 0}
@@ -53,6 +56,9 @@ def make_client(texts, judge_reply: str | None = None, judge_status: int = 200):
             calls["judge"] += 1
             if judge_status != 200:
                 return httpx.Response(judge_status, text="judge is down")
+            usage = {"prompt_tokens": 10, "completion_tokens": 10}
+            if judge_cost is not None:
+                usage["cost"] = judge_cost
             return httpx.Response(
                 200,
                 json={
@@ -60,25 +66,32 @@ def make_client(texts, judge_reply: str | None = None, judge_status: int = 200):
                     "choices": [
                         {"message": {"content": judge_reply or ""}, "finish_reason": "stop"}
                     ],
+                    "usage": usage,
                 },
             )
         calls["probe"] += 1
         content = next(cycle)
+        usage = {"prompt_tokens": 10, "completion_tokens": len(content) // 4}
+        if probe_cost is not None:
+            usage["cost"] = probe_cost
         return httpx.Response(
             200,
             json={
                 "model": "m",
                 "system_fingerprint": "fp_1",
                 "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 10, "completion_tokens": len(content) // 4},
+                "usage": usage,
             },
         )
 
     return _RealAsyncClient(transport=httpx.MockTransport(handler)), calls
 
 
-def run(config, store, texts, judge_reply=None, judge_status=200, baseline=False):
-    client, calls = make_client(texts, judge_reply, judge_status)
+def run(
+    config, store, texts, judge_reply=None, judge_status=200, baseline=False,
+    probe_cost=None, judge_cost=None,
+):
+    client, calls = make_client(texts, judge_reply, judge_status, probe_cost, judge_cost)
 
     async def go():
         async with client:
@@ -87,6 +100,10 @@ def run(config, store, texts, judge_reply=None, judge_status=200, baseline=False
             return await check(config, store, client=client)
 
     return asyncio.run(go()), calls
+
+
+def probe_sample_count(config) -> int:
+    return config.probes[0].check_samples
 
 
 @pytest.fixture
@@ -129,6 +146,52 @@ def test_no_judge_configured_means_no_judge_traffic(tmp_path):
     assert result.level is Level.DRIFT
     assert calls["judge"] == 0
     assert result.probes[0].judge_note is None
+
+
+def test_the_judge_call_counts_toward_the_probes_total_calls(env):
+    """The judge is a real API call beyond the probe's own samples -- it is
+    the whole reason `judge.py`'s own docstring calls it "the last and most
+    expensive layer". A run's call count that silently excluded it would
+    undercount exactly the runs where the judge actually fired.
+    """
+    config, store = env
+    result, calls = run(config, store, DRIFTED, GOOD_REPLY)
+    assert calls["judge"] == 1
+    probe = result.probes[0]
+    # 3 probe samples (BASE_CONFIG's default check_samples) plus 1 judge call.
+    assert probe.total_calls == probe_sample_count(config) + 1
+
+
+def test_the_judges_own_cost_is_folded_into_the_probes_total(env):
+    """`judge.assess` discarded the `Sample` it got back after reading only
+    `.text` from it, so a judge call on a gateway that prices its responses
+    was invisible to the run's reported cost -- understating it, specifically
+    on WARN/DRIFT runs, which is exactly when a reader is most likely to be
+    looking at the number.
+    """
+    config, store = env
+    result, _ = run(config, store, DRIFTED, GOOD_REPLY, probe_cost=0.001, judge_cost=0.05)
+    probe = result.probes[0]
+    expected_probe_cost = 0.001 * probe_sample_count(config)
+    assert probe.cost_usd == pytest.approx(expected_probe_cost + 0.05)
+    assert probe.cost_known_calls == probe_sample_count(config) + 1
+
+
+def test_a_failed_judge_call_still_counts_as_an_attempt_but_not_a_known_cost(env):
+    """The judge call happened -- a real request went out and failed -- so it
+    belongs in `total_calls`. Its cost is genuinely unknown, not zero, so it
+    must not be counted in `cost_known_calls` either: the report should read
+    as a partial sum, not a complete one that happens to exclude a failure.
+    """
+    config, store = env
+    result, calls = run(
+        config, store, DRIFTED, GOOD_REPLY, judge_status=500, probe_cost=0.001
+    )
+    assert calls["judge"] == 1
+    probe = result.probes[0]
+    assert probe.total_calls == probe_sample_count(config) + 1
+    assert probe.cost_known_calls == probe_sample_count(config)
+    assert probe.judge_note is None  # the failed judge contributed nothing to explain
 
 
 # --- What it contributes ---------------------------------------------------

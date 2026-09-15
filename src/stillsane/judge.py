@@ -23,7 +23,7 @@ from typing import Any
 import httpx
 
 from .config import JudgeConfig, ProbeConfig
-from .models import Level, ProbeVerdict
+from .models import Level, ProbeVerdict, Sample
 from .signals.structural import extract_lenient
 from .targets import build_target
 
@@ -76,16 +76,24 @@ class Judge:
 
     async def assess(
         self, verdict: ProbeVerdict, client: httpx.AsyncClient
-    ) -> JudgeVerdict | None:
-        """Ask about one probe. Returns None if the judge could not answer.
+    ) -> tuple[JudgeVerdict | None, Sample | None]:
+        """Ask about one probe. Returns (None, None) if nothing was asked.
 
         Never raises. The check has already produced a verdict from measurements;
         letting a failed second opinion take that down would be strictly worse than
         going without the explanation.
+
+        Also returns the raw `Sample` the judge call produced -- `None` only
+        when no call was made at all (missing excerpts) -- so the caller can
+        fold its cost into the probe's own `total_calls`/`cost_usd`. The judge
+        is a real, potentially billed API call, not a free second opinion,
+        and a run's reported cost that silently excluded it would understate
+        exactly the runs -- WARN and DRIFT -- where a reader is most likely
+        to be checking the number.
         """
         before, after = verdict.baseline_excerpt, verdict.observed_excerpt
         if not before or not after:
-            return None
+            return None, None
 
         moved = ", ".join(sv.signal for sv in verdict.moved) or "none"
         prompt = TEMPLATE.format(before=before, after=after, signals=moved)
@@ -93,8 +101,8 @@ class Judge:
 
         sample = await self._target.call(probe, client)
         if not sample.ok:
-            return None
-        return parse_verdict(sample.text)
+            return None, sample
+        return parse_verdict(sample.text), sample
 
 
 def parse_verdict(text: str) -> JudgeVerdict | None:

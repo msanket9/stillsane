@@ -227,6 +227,24 @@ class ProbeVerdict:
     #: entire purpose of the flag is to never be mistaken for a real refusal
     #: or a real drift verdict.
     stale_comparison: bool = False
+    #: How many current-run samples this probe actually took (`check_samples`
+    #: under ordinary circumstances, fewer if the run itself failed before
+    #: sampling). Zero for a probe that never got past baseline resolution --
+    #: no baseline, a stale hash without `--against-stale` -- since no call
+    #: was made.
+    total_calls: int = 0
+    #: Sum of `Sample.cost_usd` across this probe's current-run samples that
+    #: reported one. `None` rather than 0.0 when nothing did, so the report
+    #: can tell "measured zero" apart from "nothing to sum" -- most gateways
+    #: never report cost at all, and printing a confident "$0.0000" would be
+    #: the exact fabricated number `report.py`'s own formatting rule exists
+    #: to rule out.
+    cost_usd: float | None = None
+    #: Of `total_calls`, how many contributed to `cost_usd`. Equal to
+    #: `total_calls` unless some samples reported a cost and others did not --
+    #: a gateway that only prices some responses, say -- in which case the
+    #: figure is a partial sum and must say so rather than read as a total.
+    cost_known_calls: int = 0
 
     @property
     def moved(self) -> list[SignalVerdict]:

@@ -578,6 +578,126 @@ def test_report_never_emits_escape_codes_when_colour_is_off(env):
     assert "\033[" not in render(result, colour=False)
 
 
+# --- Run cost ---------------------------------------------------------------
+
+
+def _client_with_cost(cost):
+    """A fake provider reporting a per-call cost, or none at all."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = {"choices": [{"message": {"content": "stable text"}, "finish_reason": "stop"}]}
+        if cost is not None:
+            body["usage"] = {"cost": cost}
+        return httpx.Response(200, json=body)
+
+    return _RealAsyncClient(transport=httpx.MockTransport(handler))
+
+
+def test_run_cost_footer_never_emits_escape_codes_when_colour_is_off(env):
+    """The existing escape-code test never exercises this line: nothing in
+    the shared `make_client` fixture reports a cost, so `_cost_footer`
+    returns `None` for every other test in this suite and the dimmed-text
+    path (`paint.dim`) went untested. A plain substring check on the cost
+    line would not have caught a leak here either -- `"this run: ..." in
+    text` still holds even if ANSI codes wrapped around it -- so this checks
+    the whole rendered report, the same way the existing test does.
+    """
+    config, store, history = env
+
+    async def go_baseline():
+        async with _client_with_cost(0.001) as client:
+            return await capture_baseline(config, store, client=client)
+
+    asyncio.run(go_baseline())
+
+    async def go_check():
+        async with _client_with_cost(0.0041) as client:
+            return await check(config, store, history, client=client)
+
+    result = asyncio.run(go_check())
+    text = render(result, colour=False)
+    assert "this run" in text  # guard against a vacuous pass
+    assert "\033[" not in text
+
+
+def test_run_cost_is_summed_in_the_footer(env):
+    """"Near-zero running cost" is a claim the reader cannot check from PASS
+    or an exit code alone. `Sample.cost_usd` is already populated wherever a
+    gateway reports it; nothing summed it for the run before.
+    """
+    config, store, history = env
+
+    async def go_baseline():
+        async with _client_with_cost(0.001) as client:
+            return await capture_baseline(config, store, client=client)
+
+    asyncio.run(go_baseline())
+
+    async def go_check():
+        async with _client_with_cost(0.0041) as client:
+            return await check(config, store, history, client=client)
+
+    result = asyncio.run(go_check())
+    text = render(result, colour=False)
+    assert f"this run: {config.probes[0].check_samples} calls, $0.0123" in text
+
+    data = payload_for(result)
+    assert data["calls"] == config.probes[0].check_samples
+    assert data["cost_usd"] == pytest.approx(0.0123)
+    assert data["cost_known_calls"] == config.probes[0].check_samples
+
+
+def test_run_cost_is_omitted_when_nothing_reports_one(env):
+    """Most gateways never report cost. Printing a confident `$0.0000` would
+    be exactly the fabricated number this report's own formatting rule
+    exists to rule out, so the line must not appear at all.
+    """
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    result = run_check(config, store, history, STABLE)
+
+    assert "this run" not in render(result, colour=False)
+    assert payload_for(result)["cost_usd"] is None
+    assert payload_for(result)["cost_known_calls"] == 0
+
+
+def test_run_cost_says_when_it_is_a_partial_sum(env):
+    """Some calls priced, some did not -- a gateway that only prices certain
+    responses, say. Mixing known and unknown costs into one number would
+    read as the run's total; it must say it is not.
+    """
+    config, store, history = env
+
+    async def go_baseline():
+        async with _client_with_cost(0.001) as client:
+            return await capture_baseline(config, store, client=client)
+
+    asyncio.run(go_baseline())
+
+    costs = iter([0.004, 0.004, None])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cost = next(costs, None)
+        body = {"choices": [{"message": {"content": "stable text"}, "finish_reason": "stop"}]}
+        if cost is not None:
+            body["usage"] = {"cost": cost}
+        return httpx.Response(200, json=body)
+
+    async def go_check():
+        async with _RealAsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await check(config, store, history, client=client)
+
+    result = asyncio.run(go_check())
+    text = render(result, colour=False)
+    assert "this run: $0.0080 across 2 of 3 calls" in text
+    assert "this run: 3 calls" not in text
+
+    data = payload_for(result)
+    assert data["cost_usd"] == pytest.approx(0.008)
+    assert data["cost_known_calls"] == 2
+    assert data["calls"] == 3
+
+
 def test_alert_payload_is_structured(env):
     config, store, history = env
     run_baseline(config, store, STABLE)

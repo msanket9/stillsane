@@ -29,7 +29,7 @@ from .compare import (
     within_run_evidence,
 )
 from .config import Config, ProbeConfig, TargetConfig, config_hash
-from .judge import Judge, JudgeVerdict
+from .judge import Judge
 from .judge import apply as judge_apply
 from .models import Level, ProbeVerdict, RunResult, Sample, SignalVerdict
 from .signals import build_signals, default_embedder
@@ -223,8 +223,20 @@ async def _run_judge(
     for verdict, result in zip(suspects, results, strict=True):
         # A judge that fell over must not take the run down with it. The verdict
         # came from measurements and stands on its own; the judge only adds prose.
-        judge_apply(verdict, result if isinstance(result, JudgeVerdict) else None,
-                    config.judge.can_downgrade)
+        judged, sample = result if not isinstance(result, BaseException) else (None, None)
+        # The judge call is a real API call and, on gateways that price it, a
+        # real cost -- fold both into the same probe's totals `check`'s own
+        # sampling loop already populated, so the footer's "this run: N
+        # calls, $X" does not silently exclude exactly the calls that fire
+        # only on the WARN/DRIFT runs a reader is most likely to be checking
+        # the cost of. `sample` is `None` only when no call was attempted at
+        # all (missing excerpts, or the unexpected-exception fallback above).
+        if sample is not None:
+            verdict.total_calls += 1
+            if sample.cost_usd is not None:
+                verdict.cost_usd = (verdict.cost_usd or 0.0) + sample.cost_usd
+                verdict.cost_known_calls += 1
+        judge_apply(verdict, judged, config.judge.can_downgrade)
 
 
 async def check(
@@ -317,6 +329,11 @@ async def check(
             # it is a fact about reaching the endpoint, and the comparison layer
             # deliberately knows nothing about transport.
             verdict.retries = sum(max(0, s.attempts - 1) for s in samples)
+            verdict.total_calls = len(samples)
+            known_costs = [s.cost_usd for s in samples if s.cost_usd is not None]
+            if known_costs:
+                verdict.cost_usd = sum(known_costs)
+                verdict.cost_known_calls = len(known_costs)
             sampled.append((plan, samples))
 
             if stale:
