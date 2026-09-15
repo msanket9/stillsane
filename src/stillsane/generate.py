@@ -81,6 +81,19 @@ def extract_from_record(record: Any) -> tuple[str, str | None] | None:
             ),
             None,
         )
+        # Anthropic's Messages API carries `system` as a top-level string
+        # alongside `messages`, rather than as a message with role "system"
+        # inside it -- `messages` there holds only user/assistant turns. A
+        # record shaped that way found no system message above and silently
+        # dropped the system prompt, which changes what the probe actually
+        # tests (and what the config hash covers) without anyone asking for
+        # that. Checked only when the embedded form found nothing, so a
+        # genuine `role: system` message still wins if a record somehow has
+        # both.
+        if not system:
+            top_level = record.get("system")
+            if isinstance(top_level, str) and top_level.strip():
+                system = top_level
         user = [
             _text_of(m.get("content"))
             for m in messages

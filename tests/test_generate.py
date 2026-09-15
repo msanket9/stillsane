@@ -42,6 +42,47 @@ def test_reads_an_openai_request_body():
     assert got == ("Extract the total.", "Be terse.")
 
 
+def test_reads_an_anthropic_request_body():
+    """Anthropic's Messages API carries `system` as a top-level string rather
+    than a message with role "system" inside `messages` -- a record shaped
+    this way used to silently drop the system prompt, changing what the probe
+    actually tests (and what the config hash covers) without anyone asking.
+    """
+    got = extract_from_record(
+        {
+            "model": "claude-opus-5",
+            "max_tokens": 1024,
+            "system": "Be terse.",
+            "messages": [{"role": "user", "content": "Extract the total."}],
+        }
+    )
+    assert got == ("Extract the total.", "Be terse.")
+
+
+def test_an_embedded_system_message_wins_over_a_top_level_one():
+    """The unlikely case of a record carrying both forms: the genuine `role:
+    system` message inside `messages` is more specific and must not be
+    silently overridden by a same-named top-level field.
+    """
+    got = extract_from_record(
+        {
+            "system": "top-level, should not be used",
+            "messages": [
+                {"role": "system", "content": "embedded, should win"},
+                {"role": "user", "content": "hi"},
+            ],
+        }
+    )
+    assert got == ("hi", "embedded, should win")
+
+
+def test_a_blank_top_level_system_is_not_treated_as_one():
+    got = extract_from_record(
+        {"system": "   ", "messages": [{"role": "user", "content": "hi"}]}
+    )
+    assert got == ("hi", None)
+
+
 def test_uses_the_last_user_turn_in_a_conversation():
     """A multi-turn log entry: the final user message is the actual request."""
     got = extract_from_record(
