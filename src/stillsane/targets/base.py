@@ -82,11 +82,25 @@ def dotted_get(data: Any, path: str) -> Any:
     return current
 
 
-def render_template(value: Any, variables: dict[str, str]) -> Any:
-    """Substitute `{{name}}` placeholders throughout a nested structure."""
+def render_template(value: Any, variables: dict[str, Any]) -> Any:
+    """Substitute `{{name}}` placeholders throughout a nested structure.
+
+    A string that is *exactly* one placeholder, with nothing else around it,
+    substitutes the variable's own value whatever type that is -- this is
+    what lets `body: {messages: "{{turns}}"}` splice a real JSON array into
+    the request rather than stringifying it into something no API accepts. A
+    placeholder mixed into surrounding text always becomes an actual string,
+    converting a non-string variable to its `str()` form; that only matters
+    for `turns`, which is documented as a whole-value placeholder for exactly
+    this reason.
+    """
     if isinstance(value, str):
         for key, replacement in variables.items():
-            value = value.replace("{{" + key + "}}", replacement)
+            placeholder = "{{" + key + "}}"
+            if value == placeholder:
+                return replacement
+        for key, replacement in variables.items():
+            value = value.replace("{{" + key + "}}", str(replacement))
         return value
     if isinstance(value, dict):
         return {k: render_template(v, variables) for k, v in value.items()}

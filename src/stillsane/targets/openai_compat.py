@@ -52,6 +52,12 @@ class OpenAICompatTarget(HTTPTarget):
         messages = []
         if probe.system:
             messages.append({"role": "system", "content": probe.system})
+        # Scripted history, sent verbatim on every sample. Only the final
+        # turn below is live -- an earlier assistant turn answering for
+        # itself each time would compound variance across turns until the
+        # band stopped meaning anything.
+        for turn in probe.turns or []:
+            messages.append({"role": turn.role, "content": turn.content})
         messages.append({"role": "user", "content": probe.prompt})
 
         payload: dict[str, Any] = {"model": self.config.model, "messages": messages}

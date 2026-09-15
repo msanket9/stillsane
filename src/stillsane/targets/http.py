@@ -22,7 +22,16 @@ class GenericHTTPTarget(HTTPTarget):
     """
 
     def build_request(self, probe: ProbeConfig) -> tuple[str, str, dict[str, str], dict[str, Any]]:
-        variables = {"prompt": probe.prompt, "system": probe.system or ""}
+        # `{{turns}}` is meant as a whole-value placeholder -- e.g.
+        # `body: {messages: "{{turns}}"}` -- since both OpenAI's and
+        # Anthropic's `messages` arrays use this same `role`/`content` shape
+        # for user/assistant turns; `render_template` splices the list in
+        # directly rather than stringifying it.
+        variables = {
+            "prompt": probe.prompt,
+            "system": probe.system or "",
+            "turns": [{"role": t.role, "content": t.content} for t in (probe.turns or [])],
+        }
         payload = render_template(self.config.body or {}, variables)
         url = self.config.base_url.rstrip("/") + (self.config.path or "")
         return self.config.method.upper(), url, self._headers(), payload

@@ -741,6 +741,44 @@ confident `$0.0000` would be a fabricated number, not a measurement. When only
 some calls priced themselves, the line says so rather than reading as a total:
 `this run: $0.0123 across 6 of 9 calls`.
 
+### Multi-turn probes
+
+A probe is one message by default, and drift that only shows up two or three
+turns into a conversation is invisible to that. `turns` scripts fixed history
+in front of the probe's own live turn:
+
+```yaml
+probes:
+  - id: invoice_followup
+    turns:
+      - role: user
+        content: "Here is an invoice: $40 line one, $60 line two."
+      - role: assistant
+        content: "Got it -- what would you like to know?"
+    prompt: "What's the total?"
+```
+
+Every entry in `turns` is fixed and sent verbatim on every sample; only the
+final turn, `prompt`, is ever live. An earlier assistant turn answering for
+itself on each sample would compound variance across turns until the band
+stopped meaning anything, which is why history is scripted rather than
+replayed from a real prior run. Editing `turns` invalidates the baseline, the
+same as editing `prompt`.
+
+For `type: http`, `{{turns}}` is a whole-value placeholder: used as an entire
+field's value (not mixed into surrounding text), it splices in the real list
+of `{role, content}` objects rather than stringifying it, since OpenAI's and
+Anthropic's `messages` arrays share that shape:
+
+```yaml
+body:
+  messages: "{{turns}}"
+```
+
+Not supported on `type: claude_code`: the `claude` CLI's `-p` mode has no flag
+to inject prior assistant turns, so a probe using `turns` must be scoped away
+from any `claude_code` target with the probe's own `targets:` field.
+
 ### Checks
 
 | Check | Meaning |

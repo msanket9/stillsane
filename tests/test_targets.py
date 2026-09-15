@@ -78,6 +78,49 @@ def test_request_shape_is_openai_chat_completions():
     ]
 
 
+def test_scripted_turns_are_inserted_before_the_live_prompt():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=oai_body())
+
+    probe = ProbeConfig(
+        id="p",
+        prompt="say hello",
+        system="be terse",
+        turns=[
+            {"role": "user", "content": "turn one"},
+            {"role": "assistant", "content": "turn two"},
+        ],
+    )
+    call(build_target(OAI), probe, handler)
+    assert seen["body"]["messages"] == [
+        {"role": "system", "content": "be terse"},
+        {"role": "user", "content": "turn one"},
+        {"role": "assistant", "content": "turn two"},
+        {"role": "user", "content": "say hello"},
+    ]
+
+
+def test_no_turns_configured_behaves_exactly_as_before():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=oai_body())
+
+    call(build_target(OAI), PROBE, handler)
+    assert seen["body"]["messages"] == [
+        {"role": "system", "content": "be terse"},
+        {"role": "user", "content": "say hello"},
+    ]
+
+
 def test_base_url_trailing_slash_does_not_double_up():
     target = build_target(
         TargetConfig(name="t", base_url="https://api.example.com/v1/", model="m")
@@ -489,6 +532,62 @@ def test_http_target_finish_reason_is_none_when_absent():
     assert sample.finish_reason is None
 
 
+def test_http_target_splices_turns_as_a_real_list():
+    """`{{turns}}` used as a whole-value placeholder -- `messages: "{{turns}}"`
+    -- must splice in an actual JSON array of `{role, content}` objects, not a
+    stringified one, since both OpenAI's and Anthropic's `messages` arrays use
+    this shape."""
+    target = build_target(
+        TargetConfig(
+            name="app", type="http", base_url="https://app.example.com",
+            body={"messages": "{{turns}}"},
+        )
+    )
+    probe = ProbeConfig(
+        id="p", prompt="say hello",
+        turns=[
+            {"role": "user", "content": "turn one"},
+            {"role": "assistant", "content": "turn two"},
+        ],
+    )
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"ok": True})
+
+    call(target, probe, handler)
+    assert seen["body"] == {
+        "messages": [
+            {"role": "user", "content": "turn one"},
+            {"role": "assistant", "content": "turn two"},
+        ]
+    }
+
+
+def test_http_target_turns_defaults_to_an_empty_list():
+    """No `turns` configured on the probe must splice `[]`, not `None` or the
+    literal string `"None"`."""
+    target = build_target(
+        TargetConfig(
+            name="app", type="http", base_url="https://app.example.com",
+            body={"messages": "{{turns}}"},
+        )
+    )
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"ok": True})
+
+    call(target, PROBE, handler)
+    assert seen["body"] == {"messages": []}
+
+
 # --- Helpers --------------------------------------------------------------
 
 
@@ -510,6 +609,32 @@ def test_render_template_reaches_into_nested_structures():
 def test_render_template_leaves_non_strings_alone():
     out = render_template({"n": 5, "flag": True, "none": None}, {"prompt": "P"})
     assert out == {"n": 5, "flag": True, "none": None}
+
+
+def test_render_template_splices_a_whole_value_when_the_string_is_only_a_placeholder():
+    """A field whose entire value is one `{{name}}` placeholder gets the raw
+    replacement object back, whatever type it is -- this is what lets a list
+    be spliced into a JSON body instead of stringified into something no API
+    accepts."""
+    turns = [{"role": "user", "content": "hi"}]
+    out = render_template({"messages": "{{turns}}"}, {"turns": turns})
+    assert out == {"messages": turns}
+    assert out["messages"] is turns
+
+
+def test_render_template_still_stringifies_a_non_string_mixed_into_text():
+    """The whole-value case only applies when the placeholder is the entire
+    string. Mixed into surrounding text, a non-string variable still becomes
+    its `str()` form, same as before this feature existed."""
+    out = render_template({"note": "turns were: {{turns}}"}, {"turns": [1, 2]})
+    assert out == {"note": "turns were: [1, 2]"}
+
+
+def test_render_template_prompt_and_system_are_unaffected_by_the_whole_value_case():
+    """`{{prompt}}`/`{{system}}` are always strings, so whole-value or partial
+    substitution look identical for them -- this pins that nothing regressed."""
+    out = render_template({"q": "{{prompt}}", "s": "sys: {{system}}"}, {"prompt": "P", "system": "S"})
+    assert out == {"q": "P", "s": "sys: S"}
 
 
 # --- response_path block filtering ----------------------------------------

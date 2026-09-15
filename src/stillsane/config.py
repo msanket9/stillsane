@@ -177,6 +177,21 @@ class TargetConfig(BaseModel):
         return out
 
 
+class Turn(BaseModel):
+    """One scripted line of conversation history, before the probe's own
+    live turn.
+
+    Frozen by construction: a probe is validated end to end, so there is
+    nothing to compute here, only to accept or reject strictly the same way
+    every other config model does.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class ProbeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -194,6 +209,25 @@ class ProbeConfig(BaseModel):
     checks: list[Any] = Field(default_factory=list)
     #: Which targets to run against. Empty means all of them.
     targets: list[str] = Field(default_factory=list)
+    #: Scripted conversation history before the probe's own live turn --
+    #: "turn three regressed" is unobservable when a probe is only ever one
+    #: user message. Every entry here is fixed, sent verbatim on every
+    #: sample; only the final response, to `prompt`, is ever live. Letting an
+    #: earlier assistant turn be live too would compound variance across
+    #: turns until the band stopped meaning anything -- the whole reason
+    #: these are scripted rather than replayed from a real prior run.
+    #: `claude_code` targets cannot honour this at all (no way to inject
+    #: prior assistant turns in `-p` mode), which `Config` validates against
+    #: probes and targets together, since neither model alone knows which
+    #: targets a probe will run against.
+    turns: list[Turn] | None = None
+
+    @field_validator("turns")
+    @classmethod
+    def _turns_are_not_pointlessly_empty(cls, v: list[Turn] | None) -> list[Turn] | None:
+        if v is not None and not v:
+            raise ValueError("turns: [] says nothing `prompt` alone does not -- omit it instead")
+        return v
 
     @model_validator(mode="before")
     @classmethod
@@ -359,6 +393,25 @@ class Config(BaseModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def _turns_not_against_claude_code(self) -> Config:
+        """`claude` in `-p` mode has no flag to inject prior assistant turns,
+        so a probe scripted with `turns` silently running as if it had none
+        would be the exact "documented, defaulted, read nowhere" shape
+        `watch_fingerprint` shipped in. Caught here, not on `TargetConfig` or
+        `ProbeConfig` alone, because the incompatibility is between a probe
+        and a *specific* target -- neither model knows the other exists.
+        """
+        for probe, target in self.pairs():
+            if probe.turns and target.type == "claude_code":
+                raise ValueError(
+                    f"probe {probe.id!r} uses `turns`, which target {target.name!r} "
+                    "cannot honour: `claude_code` has no way to inject prior "
+                    "assistant turns in `-p` mode. Scope the probe away from this "
+                    "target with `targets:`, or drop `turns`."
+                )
+        return self
+
     def target(self, name: str) -> TargetConfig:
         for t in self.targets:
             if t.name == name:
@@ -392,6 +445,9 @@ def config_hash(probe: ProbeConfig, target: TargetConfig, embedder: str = "model
         "prompt": probe.prompt,
         "system": probe.system,
         "checks": probe.checks,
+        # Scripted history sent on every sample -- editing it changes what the
+        # target actually sees, exactly like editing `prompt` does.
+        "turns": [t.model_dump() for t in probe.turns] if probe.turns else None,
         "target": target.identity(),
         "embedder": embedder,
     }

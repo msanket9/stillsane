@@ -6,7 +6,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from stillsane.config import Config, ProbeConfig, TargetConfig, config_hash, load_config
+from stillsane.config import Config, ProbeConfig, TargetConfig, Turn, config_hash, load_config
 
 MINIMAL = {
     "targets": [
@@ -321,3 +321,107 @@ def test_thresholds_flow_into_the_engine():
     cfg = Config.model_validate({**MINIMAL, "thresholds": {"warn_k": 2.0, "drift_k": 4.0}})
     band = cfg.thresholds.to_band_config()
     assert band.warn_k == 2.0 and band.drift_k == 4.0
+
+
+# --- Scripted turns (F6) ----------------------------------------------------
+
+
+def test_turn_rejects_an_unknown_role():
+    with pytest.raises(ValidationError, match="user.*assistant|assistant.*user"):
+        Turn(role="narrator", content="x")
+
+
+def test_turn_rejects_unknown_fields():
+    with pytest.raises(ValidationError, match="extra_forbidden|Extra inputs"):
+        Turn.model_validate({"role": "user", "content": "x", "name": "bob"})
+
+
+def test_empty_turns_list_is_rejected():
+    """`turns: []` says nothing `prompt` alone does not -- it should be omitted,
+    not written as a no-op list."""
+    with pytest.raises(ValidationError, match=r"turns.*\[\]|omit"):
+        ProbeConfig(id="p", prompt="x", turns=[])
+
+
+def test_turns_defaults_to_none():
+    assert ProbeConfig(id="p", prompt="x").turns is None
+
+
+def test_turns_are_parsed_in_order():
+    probe = ProbeConfig(
+        id="p",
+        prompt="x",
+        turns=[
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "second"},
+        ],
+    )
+    assert probe.turns == [
+        Turn(role="user", content="first"),
+        Turn(role="assistant", content="second"),
+    ]
+
+
+def test_editing_turns_invalidates_the_baseline():
+    """Scripted history is sent verbatim on every sample -- editing it changes
+    what the target actually sees, exactly like editing `prompt` does."""
+    target = TargetConfig(name="prod", base_url="https://a/v1", model="m")
+    a = ProbeConfig(id="p", prompt="q", turns=[{"role": "user", "content": "a"}])
+    b = ProbeConfig(id="p", prompt="q", turns=[{"role": "user", "content": "b"}])
+    assert config_hash(a, target) != config_hash(b, target)
+
+
+def test_adding_turns_invalidates_the_baseline():
+    target = TargetConfig(name="prod", base_url="https://a/v1", model="m")
+    without = ProbeConfig(id="p", prompt="q")
+    with_turns = ProbeConfig(id="p", prompt="q", turns=[{"role": "user", "content": "a"}])
+    assert config_hash(without, target) != config_hash(with_turns, target)
+
+
+def test_a_probe_with_turns_cannot_target_claude_code():
+    """`claude` in `-p` mode has no flag to inject prior assistant turns, so a
+    probe scripted with `turns` would silently run as if it had none."""
+    bad = {
+        "targets": [{"name": "cc", "type": "claude_code"}],
+        "probes": [
+            {
+                "id": "p",
+                "prompt": "x",
+                "turns": [{"role": "user", "content": "a"}],
+            }
+        ],
+    }
+    with pytest.raises(ValidationError, match="turns.*claude_code|claude_code.*turns"):
+        Config.model_validate(bad)
+
+
+def test_a_probe_with_turns_can_target_claude_code_if_scoped_away():
+    """The same probe is fine once it is explicitly scoped off the target that
+    cannot honour it -- the rejection is about the pairing, not the probe."""
+    cfg = Config.model_validate(
+        {
+            "targets": [
+                {"name": "cc", "type": "claude_code"},
+                {"name": "api", "base_url": "https://a/v1", "model": "m"},
+            ],
+            "probes": [
+                {
+                    "id": "p",
+                    "prompt": "x",
+                    "turns": [{"role": "user", "content": "a"}],
+                    "targets": ["api"],
+                }
+            ],
+        }
+    )
+    assert [t.name for _, t in cfg.pairs()] == ["api"]
+
+
+def test_a_probe_without_turns_can_target_claude_code():
+    cfg = Config.model_validate(
+        {
+            "targets": [{"name": "cc", "type": "claude_code"}],
+            "probes": [{"id": "p", "prompt": "x"}],
+        }
+    )
+    assert cfg.pairs()
