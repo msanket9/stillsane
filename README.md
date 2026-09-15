@@ -792,9 +792,9 @@ under `request`, `body` or `payload`. Malformed lines are skipped, because
 refusing a 10,000-line log over one line truncated mid-write would make the
 feature useless on exactly the files it exists for.
 
-Anthropic's Messages API is read too: its `system` sits as a top-level string
-alongside `messages` rather than as a `role: system` entry inside it, and both
-forms are checked.
+Anthropic's Messages API is read too: its `system` sits as a top-level string (or
+the multipart content-block form used for prompt caching) alongside `messages`
+rather than as a `role: system` entry inside it, and every form is checked.
 
 **Checks are emitted commented out.** Guessing that a probe returns JSON and being
 wrong would fail your first baseline and teach you the tool is broken. You get the

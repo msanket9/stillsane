@@ -59,6 +59,25 @@ def test_reads_an_anthropic_request_body():
     assert got == ("Extract the total.", "Be terse.")
 
 
+def test_reads_an_anthropic_multipart_system_prompt():
+    """`system` also accepts the multipart content-block-array form (used to
+    mark part of the prompt cacheable) -- the same shape `_text_of` already
+    exists to read out of a message's `content`. A string-only check would
+    have covered the plain case and silently lost this one.
+    """
+    got = extract_from_record(
+        {
+            "system": [
+                {"type": "text", "text": "You are an invoice assistant."},
+                {"type": "text", "text": "Always answer in JSON.",
+                 "cache_control": {"type": "ephemeral"}},
+            ],
+            "messages": [{"role": "user", "content": "Extract the total."}],
+        }
+    )
+    assert got == ("Extract the total.", "You are an invoice assistant.\nAlways answer in JSON.")
+
+
 def test_an_embedded_system_message_wins_over_a_top_level_one():
     """The unlikely case of a record carrying both forms: the genuine `role:
     system` message inside `messages` is more specific and must not be
@@ -79,6 +98,35 @@ def test_an_embedded_system_message_wins_over_a_top_level_one():
 def test_a_blank_top_level_system_is_not_treated_as_one():
     got = extract_from_record(
         {"system": "   ", "messages": [{"role": "user", "content": "hi"}]}
+    )
+    assert got == ("hi", None)
+
+
+def test_a_blank_embedded_system_message_does_not_mask_a_real_top_level_one():
+    """Some client libraries always include a `role: system` slot in
+    `messages`, whitespace-only when unset, rather than omitting it. Bare
+    truthiness on that content treated it as "found" -- skipping the
+    Anthropic fallback even though a real top-level `system` was sitting
+    right there, and losing it entirely.
+    """
+    got = extract_from_record(
+        {
+            "system": "Real Anthropic system prompt.",
+            "messages": [
+                {"role": "system", "content": "   "},
+                {"role": "user", "content": "hi"},
+            ],
+        }
+    )
+    assert got == ("hi", "Real Anthropic system prompt.")
+
+
+def test_a_blank_embedded_system_message_with_nothing_to_fall_back_to_is_none():
+    """The same blank-embedded-message case without a top-level `system` to
+    recover: must read as "no system prompt", not a literal empty string.
+    """
+    got = extract_from_record(
+        {"messages": [{"role": "system", "content": "   "}, {"role": "user", "content": "hi"}]}
     )
     assert got == ("hi", None)
 

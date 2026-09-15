@@ -73,13 +73,20 @@ def extract_from_record(record: Any) -> tuple[str, str | None] | None:
 
     messages = record.get("messages")
     if isinstance(messages, list):
+        # Stripped here, not just at the return, so "blank" and "absent" are
+        # the same condition throughout -- a `role: system` message with
+        # whitespace-only content (some client libraries always include the
+        # slot, unset or not) used to count as "found" by bare truthiness,
+        # which both skipped the Anthropic fallback below when a real
+        # top-level `system` was sitting right there, and returned `""`
+        # instead of `None` even with no fallback in play.
         system = next(
             (
-                _text_of(m.get("content"))
+                _text_of(m.get("content")).strip()
                 for m in messages
                 if isinstance(m, dict) and m.get("role") == "system"
             ),
-            None,
+            "",
         )
         # Anthropic's Messages API carries `system` as a top-level string
         # alongside `messages`, rather than as a message with role "system"
@@ -88,19 +95,25 @@ def extract_from_record(record: Any) -> tuple[str, str | None] | None:
         # dropped the system prompt, which changes what the probe actually
         # tests (and what the config hash covers) without anyone asking for
         # that. Checked only when the embedded form found nothing, so a
-        # genuine `role: system` message still wins if a record somehow has
-        # both.
+        # genuine, non-blank `role: system` message still wins if a record
+        # somehow has both.
+        #
+        # `_text_of`, not a bare `isinstance(..., str)` check: Anthropic's
+        # `system` also accepts the multipart content-block-array form (used
+        # to mark part of the prompt cacheable), the same shape `_text_of`
+        # already exists to read out of a message's `content`. A string-only
+        # check would have covered the plain case and silently missed this
+        # one -- the same "found a real Anthropic record, still lost the
+        # prompt" failure one shape over.
         if not system:
-            top_level = record.get("system")
-            if isinstance(top_level, str) and top_level.strip():
-                system = top_level
+            system = _text_of(record.get("system")).strip()
         user = [
             _text_of(m.get("content"))
             for m in messages
             if isinstance(m, dict) and m.get("role") == "user"
         ]
         if user and user[-1].strip():
-            return user[-1].strip(), (system.strip() if system else None)
+            return user[-1].strip(), (system or None)
 
     for key in ("prompt", "input", "text", "question"):
         value = record.get(key)
