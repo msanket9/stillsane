@@ -15,6 +15,128 @@ ambiguity that produced those three.
 
 ## Unreleased
 
+## 0.0.11 - 2026-09-15
+
+- Config validation now rejects unknown keys everywhere (`extra="forbid"` on
+  every model), matching what the README already promised and a test
+  docstring already claimed. A misspelled `alrets:` block (with `webhook:`
+  inside it) used to load cleanly with alerting silently off -- the worst
+  available failure mode for a monitor -- and typos like
+  `escalate_fingerpint`/`retires`/`cheks` were silently dropped rather than
+  rejected by name.
+- `check` no longer lets a setup failure -- a missing API key, an invalid
+  config, an embedding model that failed to load -- exit 1, the DRIFT code.
+  `main` now catches `RuntimeError`/`ValueError`/`FileNotFoundError` at the
+  top level and prints `stillsane: ...` with the ERROR exit code instead of a
+  traceback; a CI job with an unset `OPENAI_API_KEY` secret used to fail as
+  "drift", with no webhook firing and no history row written.
+- Fingerprint (and `model_id`) comparison used to test the baseline and check
+  sets for equality, so a provider that legitimately returns more than one
+  backend build at baseline -- common under load balancing -- reported WARN on
+  any check that happened to draw a subset of them. Only fingerprints genuinely
+  new to the check now count as a change.
+- `watch_fingerprint: false` is documented, shipped in the starter config and
+  the bundled example, and used to be read nowhere -- setting it had no
+  effect. It's now honoured: a target with fingerprint watching turned off
+  skips the signal entirely, the intended escape hatch for a provider whose
+  fingerprint churns on its own.
+- `strict_when_perfect` (governing `valid_json` and `response_complete`) used
+  to key on the baseline's *median*, so a baseline of four clean samples and
+  one failure still counted as "passing every baseline sample", and any
+  failure on check reported DRIFT with a message that was simply false. It now
+  keys on the baseline minimum, and still falls back to a band for a baseline
+  that was genuinely flaky.
+- A signal absent at baseline -- no tool calls yet, or a probe still returning
+  prose -- that starts firing on check (an agent beginning to call a tool, or a
+  probe moving from prose to JSON) used to be silently reported as "skipped:
+  baseline has too few samples", and the whole probe read PASS if the text
+  happened to match. That is now a reported change rather than a false pass.
+- `max_length` used to add a second, identically-named `length_chars` signal
+  alongside the always-on one, producing two rows in every report and two
+  history rows sharing one key. It is now its own `max_length` signal,
+  distinct from the always-on `length_chars`.
+- Concurrency used to be capped per `collect()` call rather than per target, so
+  N probes against one endpoint could open up to `4N` concurrent requests --
+  `init --from-logs`'s default of 20 could open 80 at once against a single
+  provider and trip its rate limit. A semaphore is now shared per target name
+  across every probe pointed at it.
+- `status` used to describe every ERROR-level run as a "transport error" and
+  tell the user it is an environment problem, including runs that actually
+  failed because the baseline was captured under a different config or did
+  not exist yet. Those cases are now worded separately from genuine transport
+  failures.
+- The config hash now includes request `headers`, matching the README's own
+  `type: http` example (`x-tenant: acme`); changing a header that selects the
+  backend used to leave an old baseline looking valid.
+- The `min_confident_n` check for pairwise signals compared a count of pairs
+  (10 for 5 samples) against a threshold documented, and used elsewhere, as a
+  count of baseline samples, silently changing what the configured number
+  meant depending on whether a probe used a pointwise or pairwise signal. Both
+  now compare against the same, documented unit.
+- Baseline writes (`meta.json`, `samples.jsonl`, `variance.json`) are now
+  write-to-temp-then-replace, so a crash or kill mid-write can no longer leave
+  a half-written file that fails every subsequent `check` or silently shadows
+  a good prior version.
+- Directory names derived from target/probe ids now include a short hash of
+  the raw id, closing a collision where two differently-punctuated ids (or an
+  id containing the `__` separator) could resolve to the same baseline
+  directory and silently share a version sequence.
+- A signal with no stored anchor -- because it was not present at baseline --
+  used to derive a fresh anchor from that run's own moving pool and never
+  persist it, so its caps quietly re-based against "yesterday" on every run.
+  The anchor is now computed once and persisted like every other signal's.
+- `headers: {Authorization: ...}` alongside `api_key_env` used to send both
+  `Authorization` and a separately added `authorization` header, since only
+  the configured key header's name was lowercased for the collision check, not
+  the user's own header. Both are now compared case-insensitively.
+- `calibrate` used to report "never moved" for a signal -- latency, say --
+  that only ever improved, because the one-sided z-score clamp reads
+  identically to "no headroom data". The two cases are now worded
+  differently.
+- `bands` now flags a baseline as stale -- computing the same expected hash
+  `check` would refuse -- instead of silently reporting "all bands look sound"
+  on a baseline the very next `check` will reject.
+- `status`'s per-probe line now shows the level of the most recent run, and
+  `cmd_bands` now iterates `config.pairs()` like every other command, instead
+  of a separate targets-then-probes loop that produced a different output
+  order for multi-target configs.
+- `TargetConfig.store_raw` (default off) makes persisting each sample's full
+  response body into the baseline an explicit opt-in rather than always-on --
+  `.stillsane/baselines/` is meant to be committed to git, and for `type:
+  http` against your own app `raw` is whatever your API actually returned,
+  tenant data included.
+- A new doc-consistency test greps `src/` for every `TargetConfig`/
+  `ProbeConfig` field name outside `config.py`, catching a field that is
+  documented and validated but read nowhere -- the exact shape
+  `watch_fingerprint` shipped in.
+- The signal-name column in reports is now wide enough for
+  `has_keys[total,due_date]` and similar multi-key check names, which used to
+  misalign the row.
+- `stillsane check --against-stale` compares against a baseline captured under
+  a different config on purpose -- every verdict capped at WARN, the variance
+  pool never updated, and the report saying so on every line -- so a PR that
+  edits a probe can actually be reviewed instead of just blocking on
+  "recapture first, commit, push again."
+- `check` now persists each run's samples to
+  `.stillsane/runs/<run_id>/samples.jsonl` (last 50 runs kept), and `history
+  --run <id>` prints the excerpt block, so investigating a 6am alert no longer
+  means digging through the CI log for what the model actually said.
+- The report footer and `--json` payload now show the run's total cost and
+  call count (`this run: 9 calls, $0.0123`, or `$0.0123 across 6 of 9 calls`
+  when only some calls priced themselves) -- "near-zero running cost" is now
+  something the output shows rather than just claims, and the judge's own call
+  is included in the total.
+- `init --from-logs` now reads Anthropic-shaped request records, where
+  `system` is a top-level string (or, for prompt caching, a multipart
+  content-block array) rather than a `messages` role -- probes generated from
+  Anthropic logs used to silently lose their system prompt.
+- `turns:` on a probe scripts fixed conversation history in front of the
+  probe's own live turn, so drift that only shows up two or three turns in is
+  observable. Every scripted turn is sent verbatim on every sample; only the
+  final turn is ever live, which is what keeps the variance band meaningful.
+  Not supported against `type: claude_code`, which has no way to inject prior
+  assistant turns in `-p` mode.
+
 - Fixed a real data-loss race in `stillsane baseline`: two processes capturing
   the same target/probe at once (a double-launched cron job, or re-running one
   while an earlier invocation is still in flight) both read the same
