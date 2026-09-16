@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from . import __version__
-from .alerts import as_json, exit_code_for, send
+from .alerts import as_json, exit_code_for, send, should_alert
 from .bands import as_json as bands_as_json
 from .bands import build_probe_signals
 from .bands import inspect as inspect_bands
@@ -550,7 +550,28 @@ def _run_check(args: argparse.Namespace) -> int:
         print(render(result, verbose=args.verbose))
 
     if result.level is not Level.PASS:
-        send(result, config.alerts.webhook, config.alerts.slack_webhook)
+        moved = [p for p in result.probes if p.level is not Level.PASS]
+        # Nothing to suppress, or announce suppressing, when no destination is
+        # even configured -- `send` already no-ops silently in that case, and
+        # this must not start printing a stderr note for every ordinary user
+        # who has never touched `alerts.repeat_every`.
+        if config.alerts.webhook or config.alerts.slack_webhook:
+            if any(should_alert(p, config.alerts.repeat_every) for p in moved):
+                send(result, config.alerts.webhook, config.alerts.slack_webhook)
+            else:
+                # Suppression is one step from "silence looks like success"
+                # (see `AlertConfig.repeat_every`), so it must never itself be
+                # silent -- this line is the difference between "nothing
+                # happened" and "something happened and was deliberately not
+                # re-sent".
+                names = ", ".join(
+                    f"{p.probe_id} @ {p.target_name} (day {p.consecutive_runs})" for p in moved
+                )
+                print(
+                    f"stillsane: alert suppressed (alerts.repeat_every="
+                    f"{config.alerts.repeat_every}, unchanged since last sent): {names}",
+                    file=sys.stderr,
+                )
 
     fail_on_warn = config.alerts.fail_on_warn
     # `--against-stale` promises exit 0 or 2 only. `fail_on_warn` escalating a

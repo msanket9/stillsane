@@ -6,7 +6,15 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from stillsane.config import Config, ProbeConfig, TargetConfig, Turn, config_hash, load_config
+from stillsane.config import (
+    AlertConfig,
+    Config,
+    ProbeConfig,
+    TargetConfig,
+    Turn,
+    config_hash,
+    load_config,
+)
 
 MINIMAL = {
     "targets": [
@@ -76,6 +84,22 @@ def test_misspelled_alerts_key_is_rejected_by_name():
     bad = {**MINIMAL, "alrets": {"webhook": "https://example.com"}}
     with pytest.raises(ValidationError, match="alrets"):
         Config.model_validate(bad)
+
+
+def test_repeat_every_defaults_to_no_suppression():
+    """`None` -- every non-PASS run alerts -- is the safe default; suppression
+    is opt-in."""
+    assert AlertConfig().repeat_every is None
+
+
+def test_repeat_every_accepts_zero_and_a_positive_count():
+    assert AlertConfig(repeat_every=0).repeat_every == 0
+    assert AlertConfig(repeat_every=3).repeat_every == 3
+
+
+def test_repeat_every_is_read_via_config_not_just_the_model():
+    cfg = Config.model_validate({**MINIMAL, "alerts": {"repeat_every": 0}})
+    assert cfg.alerts.repeat_every == 0
 
 
 def test_duplicate_names_are_rejected():

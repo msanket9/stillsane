@@ -245,6 +245,18 @@ class ProbeVerdict:
     #: a gateway that only prices some responses, say -- in which case the
     #: figure is a partial sum and must say so rather than read as a total.
     cost_known_calls: int = 0
+    #: Timestamp of the earliest run in this probe's current unbroken run of
+    #: non-PASS verdicts, this run included. `None` for a probe that passed --
+    #: the question "since when" only has an answer once something has moved.
+    #: Set by `runner.check` from `History.probe_recent_levels`, not computed
+    #: here, since answering it needs this probe's *past* runs, which this
+    #: verdict alone knows nothing about.
+    first_seen: str | None = None
+    #: How many runs in a row, counting this one, this probe has been
+    #: non-PASS without a single clean run in between. A daily cron that
+    #: alerts on the same drift Monday through Friday should be able to say
+    #: "day 4", not just repeat Monday's message -- see `alerts.slack_payload`.
+    consecutive_runs: int = 0
 
     @property
     def moved(self) -> list[SignalVerdict]:

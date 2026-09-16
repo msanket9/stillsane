@@ -19,6 +19,11 @@ from pathlib import Path
 
 from ..models import RunResult
 
+#: `Level.rank`'s own ordering, inlined as SQL -- SQLite has no way to call
+#: back into that Python mapping, and these are exactly `Level`'s four string
+#: values, so a change to one without the other is the only way this drifts.
+_LEVEL_RANK_SQL = "CASE results.level WHEN 'error' THEN 3 WHEN 'drift' THEN 2 WHEN 'warn' THEN 1 ELSE 0 END"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     run_id     TEXT PRIMARY KEY,
@@ -317,3 +322,32 @@ class History:
                 (probe_id, target, signal, limit),
             ).fetchall()
         return [(r[0], r[1], r[2]) for r in rows]
+
+    def probe_recent_levels(
+        self, probe_id: str, target: str, limit: int = 400
+    ) -> list[tuple[str, int]]:
+        """(finished, worst level rank) per run this probe/target appears in,
+        newest first.
+
+        Reduced to the worst rank across that probe's own signal rows within
+        each run -- "one error anywhere in the run decides the probe's level
+        for that run", the same rule `status.assess` already applies when it
+        builds `ProbeHealth`. `runner.check` walks this backward from the most
+        recent prior run to answer "since when has this probe been non-PASS,
+        with no clean run in between" -- see `first_seen`/`consecutive_runs`
+        on `ProbeVerdict`.
+
+        Ranks rather than level strings, so the caller can compare with a
+        plain `== 0` / `> 0` instead of repeating the level-name mapping.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT runs.finished, MAX({_LEVEL_RANK_SQL}) "
+                "FROM results JOIN runs USING (run_id) "
+                "WHERE results.probe_id = ? AND results.target = ? "
+                "GROUP BY runs.run_id "
+                # See `recent` -- rowid breaks second-resolution timestamp ties.
+                "ORDER BY runs.started DESC, runs.rowid DESC LIMIT ?",
+                (probe_id, target, limit),
+            ).fetchall()
+        return [(r[0], int(r[1])) for r in rows]

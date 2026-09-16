@@ -360,3 +360,62 @@ def test_trend_window_pre_migration_rows_are_excluded_not_guessed(tmp_path):
 
     total, early, recent = history.trend_window("p", "prod", "length_chars", 1, window=3)
     assert (total, early, recent) == (0, [], [])
+
+
+def test_probe_recent_levels_reduces_to_the_worst_signal_per_run(tmp_path):
+    """One run with several signals must collapse to one row -- the worst of
+    them -- not one row per signal, which would make every count downstream
+    (the streak length in particular) wrong by the signal count.
+    """
+    history = History(tmp_path)
+    rr = RunResult(
+        probes=[
+            ProbeVerdict(
+                probe_id="p", target_name="prod", level=Level.DRIFT,
+                signals=[
+                    SignalVerdict(signal="a", kind=None, level=Level.WARN, detail=""),
+                    SignalVerdict(signal="b", kind=None, level=Level.DRIFT, detail=""),
+                    SignalVerdict(signal="c", kind=None, level=Level.PASS, detail=""),
+                ],
+            )
+        ]
+    )
+    history.record(rr)
+    rows = history.probe_recent_levels("p", "prod")
+    assert len(rows) == 1
+    assert rows[0][1] == 2  # drift's rank, the worst of warn/drift/pass
+
+
+def test_probe_recent_levels_is_newest_first_and_scoped_to_the_probe(tmp_path):
+    history = History(tmp_path)
+    for level in (Level.PASS, Level.WARN, Level.DRIFT):
+        history.record(
+            RunResult(
+                probes=[
+                    ProbeVerdict(
+                        probe_id="p", target_name="prod", level=level,
+                        signals=[SignalVerdict(signal="s", kind=None, level=level, detail="")],
+                    )
+                ]
+            )
+        )
+    # A different probe's history must never leak in.
+    history.record(
+        RunResult(
+            probes=[
+                ProbeVerdict(
+                    probe_id="other", target_name="prod", level=Level.DRIFT,
+                    signals=[SignalVerdict(signal="s", kind=None, level=Level.DRIFT, detail="")],
+                )
+            ]
+        )
+    )
+
+    rows = history.probe_recent_levels("p", "prod")
+    assert [rank for _, rank in rows] == [2, 1, 0]  # newest (drift) first
+
+
+def test_probe_recent_levels_is_empty_for_an_unknown_probe(tmp_path):
+    history = History(tmp_path)
+    history.record(_run(Level.DRIFT))
+    assert history.probe_recent_levels("nope", "prod") == []

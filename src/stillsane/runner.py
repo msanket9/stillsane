@@ -376,9 +376,42 @@ async def check(
 
     result = build_run(verdicts)
     if history:
+        # Before this run is itself recorded: `probe_recent_levels` must see
+        # only *prior* runs, or a probe would count this run in its own
+        # streak twice.
+        finished = result.finished.isoformat(timespec="seconds") if result.finished else ""
+        for verdict in verdicts:
+            if verdict.level is not Level.PASS:
+                prior = history.probe_recent_levels(verdict.probe_id, verdict.target_name)
+                verdict.first_seen, verdict.consecutive_runs = _probe_streak(prior, finished)
         run_id = history.record(result)
         if run_samples and sampled:
             for plan, samples in sampled:
                 run_samples.append(run_id, samples, store_raw=plan.target_config.store_raw)
             run_samples.prune()
     return result
+
+
+def _probe_streak(prior_levels: list[tuple[str, int]], current_finished: str) -> tuple[str, int]:
+    """(first_seen, consecutive_runs) for a probe that just moved, including
+    the run currently being built.
+
+    `prior_levels` is that exact probe/target's own history, newest run
+    first, already reduced to one worst-signal rank per run --
+    `History.probe_recent_levels`. Walking it backward from the most recent
+    prior run, the streak extends through every consecutive non-PASS run and
+    stops at the first PASS (rank 0) or the end of recorded history -- "since
+    when has this probe been non-PASS, with no clean run in between".
+
+    Only ever called for a verdict that already moved (the caller gates on
+    `level is not Level.PASS`), so there is always at least this run's own
+    entry in the streak; a probe that passed has no "since when" to answer.
+    """
+    first_seen = current_finished
+    consecutive = 1
+    for finished, rank in prior_levels:
+        if rank == 0:
+            break
+        first_seen = finished
+        consecutive += 1
+    return first_seen, consecutive

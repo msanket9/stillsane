@@ -345,6 +345,16 @@ class AlertConfig(BaseModel):
     #: Whether WARN breaks the build. Off by default: warnings are for reading,
     #: drift is for stopping.
     fail_on_warn: bool = False
+    #: How often, in runs, to repeat an alert for a verdict that has not
+    #: changed since the last one sent. `None` (the default) means never
+    #: suppress -- every non-PASS run alerts, which is the safe default: a
+    #: monitor that can go silent on its own judgement is one step from the
+    #: "silence looks like success" failure the whole tool exists to prevent.
+    #: `0` suppresses every repeat outright, alerting only when a probe's
+    #: verdict first changes; a positive N re-sends every N runs into an
+    #: unbroken streak. Opt-in and per-probe in effect (via
+    #: `ProbeVerdict.consecutive_runs`), never per-signal.
+    repeat_every: int | None = None
 
 
 class Config(BaseModel):

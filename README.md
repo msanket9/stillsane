@@ -963,6 +963,42 @@ Two deliberate limits:
 If the judge is unreachable or answers with something unparseable, the run is
 unaffected: the verdict stands and the explanation is simply absent.
 
+### Alerts
+
+```yaml
+alerts:
+  webhook: https://hooks.example.com/...
+  slack_webhook: https://hooks.slack.com/services/...
+  fail_on_warn: false   # WARN never fails a build unless this is true
+```
+
+Fired on every non-PASS run, to `webhook` (the same JSON `--json` prints), `slack_webhook`
+(a short headline plus the plain-text report), or both. Delivery is best-effort: a
+webhook that is down is reported on stderr and never turns a successful check into
+a failed one.
+
+**"Since when?"** is the first question any alert provokes, and the alert answers
+it rather than sending the reader to `history`. Each probe in the JSON payload
+carries `first_seen` (when its current run of non-PASS verdicts began) and
+`consecutive_runs` (how many in a row, this one included, with no clean run in
+between) -- a recovery resets both, so a probe that broke again after passing
+reads as day one of a new incident, not a continuation of the old one. The Slack
+headline picks up the longest-running of the probes that moved once it is more
+than a passing mention: `DRIFT (day 4) (1/3 probes moved)`.
+
+**`alerts.repeat_every`** suppresses resending an *unchanged* verdict. Unset (the
+default) sends every non-PASS run, which is the safe choice -- a monitor that can
+go quiet on its own judgement is one step from the exact "silence looks like
+success" failure this tool exists to prevent. `repeat_every: 0` sends only when a
+probe's verdict first changes and suppresses every later repeat of the same
+streak; a positive number instead resends every that-many runs, so a long-running
+issue is not forgotten entirely. A verdict that just changed always alerts
+regardless of this setting -- suppression is about not repeating news the reader
+already has, never about missing news that is new. When a run is suppressed,
+`check` still prints why on stderr (`alert suppressed (alerts.repeat_every=0,
+unchanged since last sent): ...`) and the verdict and exit code are completely
+unaffected -- only the notification is skipped.
+
 ### Exit codes
 
 | Code | Meaning |

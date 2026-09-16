@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 from stillsane import cli
-from stillsane.alerts import exit_code_for, payload_for, send, slack_payload
+from stillsane.alerts import exit_code_for, payload_for, send, should_alert, slack_payload
 from stillsane.config import Config
 from stillsane.models import Level
 from stillsane.report import render
@@ -746,6 +746,95 @@ def test_slack_payload_is_bounded(env):
     assert "stillsane: DRIFT" in text and len(text) < 4000
 
 
+# --- "Since when": first_seen / consecutive_runs ----------------------------
+
+
+def test_consecutive_runs_climbs_across_repeated_drift(env):
+    """The case the whole feature is for: daily cron, drift on Monday, the
+    same drift Tuesday through Friday -- each run should be able to say how
+    many days this specific probe has been non-PASS, not just repeat day
+    one's numbers under a new timestamp.
+    """
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+
+    first = run_check(config, store, history, DRIFTED)
+    p1 = first.probes[0]
+    assert p1.consecutive_runs == 1
+    assert p1.first_seen is not None
+
+    second = run_check(config, store, history, DRIFTED)
+    p2 = second.probes[0]
+    assert p2.consecutive_runs == 2
+    # Pinned to when the streak *started*, not the most recent run.
+    assert p2.first_seen == p1.first_seen
+
+    third = run_check(config, store, history, DRIFTED)
+    p3 = third.probes[0]
+    assert p3.consecutive_runs == 3
+    assert p3.first_seen == p1.first_seen
+
+
+def test_a_clean_run_resets_the_streak(env):
+    """A recovery must not leave the next drift reading as "day 3" when it is
+    really day one of a new incident -- the streak is about an *unbroken* run
+    of non-PASS results, not a lifetime total.
+    """
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+
+    run_check(config, store, history, DRIFTED)
+    drifted_twice = run_check(config, store, history, DRIFTED)
+    assert drifted_twice.probes[0].consecutive_runs == 2
+
+    clean = run_check(config, store, history, STABLE)
+    assert clean.probes[0].consecutive_runs == 0
+    assert clean.probes[0].first_seen is None
+
+    drifted_again = run_check(config, store, history, DRIFTED)
+    assert drifted_again.probes[0].consecutive_runs == 1
+    # Not asserting `first_seen` differs from the earlier streak's: history
+    # timestamps are second-resolution, and this whole sequence can run
+    # inside one second in a fast test -- see `History.record`'s own note on
+    # `rowid` breaking ties it never exposes to a reader. `consecutive_runs`
+    # resetting to 1 is what actually proves the streak restarted.
+
+
+def test_a_passing_probe_never_gets_a_streak(env):
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    result = run_check(config, store, history, STABLE)
+    assert result.probes[0].consecutive_runs == 0
+    assert result.probes[0].first_seen is None
+
+
+def test_alert_payload_carries_since_when(env):
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+    run_check(config, store, history, DRIFTED)
+    result = run_check(config, store, history, DRIFTED)
+
+    row = payload_for(result)["probes"][0]
+    assert row["consecutive_runs"] == 2
+    assert row["first_seen"] is not None
+    json.dumps(payload_for(result))
+
+
+def test_slack_headline_shows_the_day_count_once_it_repeats(env):
+    config, store, history = env
+    run_baseline(config, store, STABLE)
+
+    day_one = run_check(config, store, history, DRIFTED)
+    # Day one is not itself news that this is "day one" -- nobody needs to be
+    # told the obvious on the first alert.
+    assert "(day" not in slack_payload(day_one)["text"].splitlines()[0]
+
+    run_check(config, store, history, DRIFTED)
+    day_three = run_check(config, store, history, DRIFTED)
+    headline = slack_payload(day_three)["text"].splitlines()[0]
+    assert "(day 3)" in headline
+
+
 def test_alerts_are_delivered_to_both_sinks(env, monkeypatch):
     config, store, history = env
     run_baseline(config, store, STABLE)
@@ -819,6 +908,207 @@ def test_a_malformed_webhook_url_does_not_crash_the_check(env, monkeypatch, caps
 class _Ok:
     def __init__(self, status_code: int = 200) -> None:
         self.status_code = status_code
+
+
+# --- repeat_every: suppressing a resend of an unchanged verdict ------------
+
+
+def _verdict(level=Level.DRIFT, consecutive_runs=1):
+    from stillsane.models import ProbeVerdict
+
+    return ProbeVerdict(
+        probe_id="p", target_name="t", level=level, consecutive_runs=consecutive_runs
+    )
+
+
+def test_should_alert_a_passing_probe_never_alerts():
+    assert not should_alert(_verdict(Level.PASS, consecutive_runs=0), repeat_every=None)
+    assert not should_alert(_verdict(Level.PASS, consecutive_runs=0), repeat_every=0)
+
+
+def test_should_alert_default_none_always_sends_regardless_of_streak_length():
+    for n in (1, 2, 5, 100):
+        assert should_alert(_verdict(consecutive_runs=n), repeat_every=None)
+
+
+def test_should_alert_a_fresh_verdict_always_sends_even_under_suppression():
+    """`consecutive_runs <= 1` is "this just happened" -- suppression must
+    never delay the very first notice of a new problem."""
+    assert should_alert(_verdict(consecutive_runs=1), repeat_every=0)
+    assert should_alert(_verdict(consecutive_runs=1), repeat_every=5)
+
+
+def test_should_alert_zero_suppresses_every_later_repeat():
+    assert should_alert(_verdict(consecutive_runs=1), repeat_every=0)
+    for n in (2, 3, 10):
+        assert not should_alert(_verdict(consecutive_runs=n), repeat_every=0)
+
+
+def test_should_alert_n_resends_every_n_runs_into_the_streak():
+    # day 1 (sent), 2 (suppressed), 3 (sent -- every 2 runs), 4 (suppressed), 5 (sent)
+    expected = {1: True, 2: False, 3: True, 4: False, 5: True}
+    for day, want in expected.items():
+        assert should_alert(_verdict(consecutive_runs=day), repeat_every=2) is want
+
+
+def test_repeat_every_default_sends_on_every_run(tmp_path, monkeypatch, capsys):
+    """The safe default: unset `repeat_every` must not suppress anything, or
+    a config nobody has touched would start going quiet.
+    """
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(
+        yaml.safe_dump({**CONFIG, "alerts": {"webhook": "https://example.com/hook"}})
+    )
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    capsys.readouterr()
+
+    posted = []
+    monkeypatch.setattr(
+        "stillsane.alerts.httpx.post", lambda url, **kw: posted.append(url) or _Ok()
+    )
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(DRIFTED)
+    )
+    cli.main(["-c", str(config_path), "check"])
+    cli.main(["-c", str(config_path), "check"])
+    capsys.readouterr()
+    assert len(posted) == 2
+
+
+def test_repeat_every_zero_suppresses_a_repeat_but_never_the_first_alert(
+    tmp_path, monkeypatch, capsys
+):
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {**CONFIG, "alerts": {"webhook": "https://example.com/hook", "repeat_every": 0}}
+        )
+    )
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    capsys.readouterr()
+
+    posted = []
+    monkeypatch.setattr(
+        "stillsane.alerts.httpx.post", lambda url, **kw: posted.append(url) or _Ok()
+    )
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(DRIFTED)
+    )
+    cli.main(["-c", str(config_path), "check"])  # day 1: new verdict, must alert
+    assert len(posted) == 1
+    out1 = capsys.readouterr()
+    assert "suppressed" not in out1.err
+
+    cli.main(["-c", str(config_path), "check"])  # day 2: unchanged, must suppress
+    assert len(posted) == 1  # still just the one from day 1
+    out2 = capsys.readouterr()
+    assert "alert suppressed" in out2.err
+    assert "repeat_every=0" in out2.err
+    assert "extract_invoice @ prod" in out2.err
+    assert "day 2" in out2.err
+
+    # The check itself is unaffected by suppression -- still reports DRIFT and
+    # exits non-zero. Suppression only concerns the notification, never the
+    # verdict or the exit code.
+    code = cli.main(["-c", str(config_path), "check"])
+    assert code == 1
+    assert "DRIFT" in capsys.readouterr().out
+
+
+def test_repeat_every_n_resends_periodically(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {**CONFIG, "alerts": {"webhook": "https://example.com/hook", "repeat_every": 2}}
+        )
+    )
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    capsys.readouterr()
+
+    posted = []
+    monkeypatch.setattr(
+        "stillsane.alerts.httpx.post", lambda url, **kw: posted.append(url) or _Ok()
+    )
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(DRIFTED)
+    )
+    # day 1 (sent), day 2 (suppressed), day 3 (resent -- every 2 runs)
+    for _ in range(3):
+        cli.main(["-c", str(config_path), "check"])
+    capsys.readouterr()
+    assert len(posted) == 2
+
+
+def test_a_recovery_then_new_drift_always_alerts_even_under_suppression(
+    tmp_path, monkeypatch, capsys
+):
+    """Suppression is about not repeating news the reader already has -- a
+    probe that recovered and then broke again is news, regardless of
+    `repeat_every`, and must never be silently folded into the earlier streak.
+    """
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {**CONFIG, "alerts": {"webhook": "https://example.com/hook", "repeat_every": 0}}
+        )
+    )
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    capsys.readouterr()
+
+    posted = []
+    monkeypatch.setattr(
+        "stillsane.alerts.httpx.post", lambda url, **kw: posted.append(url) or _Ok()
+    )
+
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(DRIFTED)
+    )
+    cli.main(["-c", str(config_path), "check"])  # day 1: sent
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    cli.main(["-c", str(config_path), "check"])  # recovered: no alert to suppress
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(DRIFTED)
+    )
+    cli.main(["-c", str(config_path), "check"])  # new incident, day 1 again: must send
+    capsys.readouterr()
+    assert len(posted) == 2
+
+
+def test_no_configured_destination_prints_no_suppression_noise(tmp_path, monkeypatch, capsys):
+    """A config with no webhook/slack_webhook at all must behave exactly as
+    it always has -- `repeat_every` is meaningless with nothing to send to,
+    and must not start printing a stderr line for every ordinary user who has
+    never configured alerts.
+    """
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump({**CONFIG, "alerts": {"repeat_every": 0}}))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    capsys.readouterr()
+
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(DRIFTED)
+    )
+    cli.main(["-c", str(config_path), "check"])
+    cli.main(["-c", str(config_path), "check"])
+    err = capsys.readouterr().err
+    assert "suppressed" not in err
 
 
 def test_fail_on_warn_promotes_the_exit_code(env):
