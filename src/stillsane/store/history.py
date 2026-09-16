@@ -54,7 +54,19 @@ CREATE INDEX IF NOT EXISTS results_probe_signal
 #: naming the new column fails. Anyone who has been running this on a schedule has
 #: exactly such a file, and losing their history to read one number back would be a
 #: poor trade. Adding a nullable column is cheap and leaves old rows readable.
-_ADDED_COLUMNS = (("runs", "retries", "INTEGER NOT NULL DEFAULT 0"),)
+_ADDED_COLUMNS = (
+    ("runs", "retries", "INTEGER NOT NULL DEFAULT 0"),
+    # Which baseline version a row was compared against. `trend` needs this to
+    # scope a signal's history to runs judged against the *current* baseline --
+    # otherwise a re-baseline that genuinely absorbed a shift would have its old
+    # numbers averaged in with the new ones, and the first runs after recapture
+    # would read as a shift that is actually just the old baseline's tail. Rows
+    # written before this column existed come back NULL and are excluded from
+    # trend on purpose: there is no way to know which baseline they were judged
+    # against, and guessing would be worse than staying quiet until enough new
+    # rows accumulate.
+    ("results", "baseline_version", "INTEGER"),
+)
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -97,8 +109,8 @@ class History:
             )
             conn.executemany(
                 "INSERT INTO results (run_id, probe_id, target, signal, level, observed, "
-                "baseline, z, p_value, band_upper, band_lower, detail) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "baseline, z, p_value, band_upper, band_lower, detail, baseline_version) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         run_id,
@@ -113,6 +125,7 @@ class History:
                         sv.band.upper if sv.band else None,
                         sv.band.lower if sv.band else None,
                         sv.detail,
+                        probe.baseline_version,
                     )
                     for probe in result.probes
                     for sv in probe.signals
@@ -224,6 +237,71 @@ class History:
                 "SELECT count(*), min(finished), max(finished) FROM runs WHERE level = 'pass'"
             ).fetchone()
         return (row[0] or 0, row[1], row[2])
+
+    def run_span(self) -> tuple[int, str | None, str | None]:
+        """(count, earliest, latest) over every run ever recorded, any level.
+
+        Unlike `recent`/`probe_results`, never capped by a `--limit` -- `status`
+        uses this to print "history since <date>, N runs" regardless of how many
+        rows a particular render chose to show. That line is the tell for a CI
+        deployment whose history lives in a best-effort cache: a cache miss resets
+        the database silently, and a report that only ever showed the last 20 runs
+        would look identical the day after a reset as it did a month in. Showing
+        the true span makes the reset visible instead of silent.
+        """
+        with self._connect() as conn:
+            row = conn.execute("SELECT count(*), min(finished), max(finished) FROM runs").fetchone()
+        return (row[0] or 0, row[1], row[2])
+
+    def trend_window(
+        self, probe_id: str, target: str, signal: str, baseline_version: int, window: int
+    ) -> tuple[int, list[float], list[float]]:
+        """(total runs, earliest `window` observed values, most recent `window`
+        observed values) for one signal, scoped to one exact baseline version.
+
+        The version scoping is what keeps a re-baseline from contaminating the
+        comparison: a sustained shift is exactly what recapturing should absorb,
+        so a run recorded against a since-replaced baseline must not be averaged
+        in with runs judged against the current one, or the first runs after
+        recapture would read as a shift that is really just the old baseline's
+        tail. Rows written before this column existed (`baseline_version IS
+        NULL`) never match an integer version and so are correctly excluded
+        rather than guessed at.
+
+        Two bounded queries rather than one page fetched newest-first and split
+        in Python: a single `ORDER BY started DESC LIMIT n` page only ever gives
+        the *recent* end, and reversing it cannot recover the *earliest* rows once
+        a probe has run more than `n` times under one baseline version -- exactly
+        the case (a long-lived baseline) this command exists to say something
+        useful about. Fetching each end with its own bounded query costs one more
+        round trip and is correct regardless of how much history there is.
+        """
+        with self._connect() as conn:
+            total = conn.execute(
+                "SELECT count(*) FROM results JOIN runs USING (run_id) "
+                "WHERE results.probe_id = ? AND results.target = ? AND results.signal = ? "
+                "AND results.baseline_version = ? AND results.observed IS NOT NULL",
+                (probe_id, target, signal, baseline_version),
+            ).fetchone()[0]
+            early = conn.execute(
+                "SELECT results.observed FROM results JOIN runs USING (run_id) "
+                "WHERE results.probe_id = ? AND results.target = ? AND results.signal = ? "
+                "AND results.baseline_version = ? AND results.observed IS NOT NULL "
+                "ORDER BY runs.started ASC, results.rowid ASC LIMIT ?",
+                (probe_id, target, signal, baseline_version, window),
+            ).fetchall()
+            recent = conn.execute(
+                "SELECT results.observed FROM results JOIN runs USING (run_id) "
+                "WHERE results.probe_id = ? AND results.target = ? AND results.signal = ? "
+                "AND results.baseline_version = ? AND results.observed IS NOT NULL "
+                "ORDER BY runs.started DESC, results.rowid DESC LIMIT ?",
+                (probe_id, target, signal, baseline_version, window),
+            ).fetchall()
+        return (
+            total or 0,
+            [float(r[0]) for r in early],
+            [float(r[0]) for r in reversed(recent)],
+        )
 
     def signal_trend(
         self, probe_id: str, target: str, signal: str, limit: int = 30

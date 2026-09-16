@@ -137,6 +137,17 @@ class Status:
     #: bad config -- which is a different diagnosis and a different fix, and must
     #: not be told to the reader as "check your network".
     transport_error_runs: int = 0
+    #: Every run ever recorded, and the earliest one -- unbounded by `--limit`,
+    #: unlike `total_runs` above (which only counts the window this render
+    #: actually looked at). A CI deployment whose `history.sqlite` lives in a
+    #: best-effort cache (see the README) can have that cache silently missed
+    #: and reset without any single run failing -- the canary keeps reporting,
+    #: it just forgot everything before today. A `--limit`-bounded count looks
+    #: identical the day after a reset as it did a month in; only the true span
+    #: makes the reset visible, which is the entire reason this is tracked
+    #: separately rather than reusing `total_runs`.
+    runs_recorded_ever: int = 0
+    first_recorded: datetime | None = None
 
     @property
     def last_run(self) -> datetime | None:
@@ -189,6 +200,8 @@ def assess(
     *,
     now: datetime | None = None,
     expect_every_s: float | None = None,
+    runs_recorded_ever: int = 0,
+    first_recorded: str | None = None,
 ) -> Status:
     """Build the health picture from what `History` returns.
 
@@ -262,6 +275,8 @@ def assess(
         now=now,
         expect_every_s=expect_every_s,
         transport_error_runs=transport_error_runs,
+        runs_recorded_ever=runs_recorded_ever,
+        first_recorded=_parse_ts(first_recorded),
     )
 
 
@@ -288,6 +303,17 @@ def render(status: Status, limit: int = 20) -> str:
     lines.append(f"last run        {_ago(status.last_run, status.now)}   {last_level}")
     lines.append(f"last clean run  {_ago(status.last_clean, status.now)}")
     lines.append(f"runs recorded   {status.total_runs}")
+    if status.first_recorded:
+        # Unbounded by --limit on purpose: a CI deployment whose history lives in
+        # a best-effort cache (see the README) can have that cache silently
+        # missed, and the canary keeps reporting either way -- nothing here
+        # fails. "history since <a few hours ago>, 3 runs" after a month of
+        # daily runs is the only thing that makes a reset visible rather than
+        # silent.
+        lines.append(
+            f"history since   {status.first_recorded.date()}, "
+            f"{status.runs_recorded_ever} run(s) recorded"
+        )
 
     if status.total_retries:
         lines.append(f"retried calls   {status.total_retries}   (transport, recovered)")
@@ -382,6 +408,8 @@ def payload(status: Status) -> dict:
         "healthy": status.healthy,
         "overdue": status.overdue,
         "total_runs": status.total_runs,
+        "runs_recorded_ever": status.runs_recorded_ever,
+        "first_recorded": status.first_recorded.isoformat() if status.first_recorded else None,
         "error_runs": status.error_runs,
         "transport_error_runs": status.transport_error_runs,
         "other_error_runs": status.other_error_runs,

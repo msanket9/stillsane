@@ -46,6 +46,34 @@ def test_no_runs_says_so_plainly():
     assert "No runs recorded yet" in render(status)
 
 
+def test_history_since_line_uses_the_unbounded_span_not_the_limited_window():
+    """A CI deployment whose history.sqlite lives in a best-effort cache (see
+    the README) can have a cache miss reset it without a single run failing --
+    `runs_recorded_ever`/`first_recorded` must reflect the database's true age,
+    not the handful of rows a `--limit`-bounded `runs`/`results` page carries.
+    """
+    status = build(
+        [run("r1", 1, "pass")],
+        [result("r1", 1, "p", "pass")],
+        runs_recorded_ever=47,
+        first_recorded=ts(24 * 30),
+    )
+    assert status.runs_recorded_ever == 47
+    assert status.first_recorded is not None
+    text = render(status)
+    assert "history since" in text
+    assert "47 run(s) recorded" in text
+
+
+def test_history_since_line_is_absent_without_a_span():
+    """Old call sites (or a fresh, still-empty database) that pass nothing for
+    these must not print a broken or misleading line."""
+    status = build([run("r1", 1, "pass")], [result("r1", 1, "p", "pass")])
+    assert status.runs_recorded_ever == 0
+    assert status.first_recorded is None
+    assert "history since" not in render(status)
+
+
 def test_overdue_when_a_scheduled_run_was_missed():
     """The failure this command exists for: it stopped running and looked fine.
 
@@ -304,6 +332,18 @@ def test_payload_carries_the_health_verdict():
     assert data["error_runs"] == 1
     assert data["expect_every_s"] == 86400
     assert data["probes"][0]["reasons"] == ["timeout after 60.0s"]
+
+
+def test_payload_carries_the_unbounded_history_span():
+    status = build(
+        [run("r1", 1, "pass")],
+        [result("r1", 1, "p", "pass")],
+        runs_recorded_ever=47,
+        first_recorded=ts(24 * 30),
+    )
+    data = payload(status)
+    assert data["runs_recorded_ever"] == 47
+    assert data["first_recorded"] is not None
 
 
 def test_payload_splits_transport_from_other_errors():

@@ -32,7 +32,7 @@ from .generate import (
     read_records,
     to_yaml,
 )
-from .models import EXIT_CODES, Level
+from .models import EXIT_CODES, Direction, Level
 from .report import render
 from .runner import capture_baseline, check
 from .signals import default_embedder
@@ -40,6 +40,9 @@ from .status import as_json as as_status_json
 from .status import assess, parse_every
 from .status import render as render_status
 from .store import DEFAULT_KEEP, BaselineStore, History, RunSampleStore
+from .trend import MissingTrend, SignalTrend, Trend, evaluate_signal
+from .trend import as_json as trend_as_json
+from .trend import render as render_trend
 
 DEFAULT_CONFIG = "stillsane.yaml"
 
@@ -276,6 +279,76 @@ def cmd_bands(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_trend(args: argparse.Namespace) -> int:
+    """The one form of drift `check` cannot see: a shift too small to ever
+    cross `warn_k` on its own, spread across many runs instead of one.
+
+    Reads the history database and the baseline files already on disk. No
+    network, no API key, no new sampling -- see `trend.py` for why, and for
+    the two traps (a non-stationary reference, a re-baseline read as a shift)
+    the comparison is built to avoid.
+    """
+    config = _load(args.config)
+    store, history = _store(config, args.config)
+    cfg = config.thresholds.to_band_config()
+    only = set(args.probe) if args.probe else None
+
+    signals_out: list[SignalTrend] = []
+    missing_out: list[MissingTrend] = []
+    no_baseline = []
+
+    for probe, target in config.pairs():
+        if only and probe.id not in only:
+            continue
+        baseline = store.load(target.name, probe.id)
+        if baseline is None:
+            no_baseline.append(f"{probe.id} @ {target.name}")
+            continue
+
+        signals = build_probe_signals(probe.checks, watch_fingerprint=target.watch_fingerprint)
+        direction_by_name = {s.name: getattr(s, "direction", Direction.UP_IS_BAD) for s in signals}
+        probe_bands = inspect_bands(baseline, signals, cfg, probe.check_samples)
+
+        for sb in probe_bands.signals:
+            total, early, recent = history.trend_window(
+                probe.id, target.name, sb.signal, baseline.version, args.window
+            )
+            result = evaluate_signal(
+                probe.id, target.name, sb.signal,
+                total=total, early_values=early, recent_values=recent,
+                band=sb.band, direction=direction_by_name[sb.signal],
+                cfg=cfg, window=args.window,
+            )
+            if isinstance(result, SignalTrend):
+                signals_out.append(result)
+            else:
+                missing_out.append(result)
+
+    trend = Trend(signals=signals_out, missing=missing_out, window=args.window)
+
+    if not trend.signals and not trend.missing:
+        if no_baseline:
+            print(
+                "No baselines captured yet for: " + ", ".join(no_baseline) + "\n"
+                "Run `stillsane baseline` first.",
+                file=sys.stderr,
+            )
+            return 1
+        print("No probes matched.", file=sys.stderr)
+        return 1
+
+    print(trend_as_json(trend) if args.json else render_trend(trend))
+    if no_baseline:
+        print("\nNo baseline yet for: " + ", ".join(no_baseline), file=sys.stderr)
+
+    # Default 0, matching `bands`/`calibrate`: an inspection command should not
+    # break a build merely for having been asked. --strict is for a scheduled
+    # job that wants to alert on a sustained shift specifically.
+    if args.strict and trend.shifted:
+        return EXIT_CODES[Level.WARN]
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """Report on the canary rather than on the model.
 
@@ -292,10 +365,13 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(f"stillsane: {exc}", file=sys.stderr)
             return 1
 
+    runs_recorded_ever, first_recorded, _last_recorded = history.run_span()
     status = assess(
         history.recent(limit=args.limit),
         history.probe_results(limit_runs=args.limit),
         expect_every_s=every,
+        runs_recorded_ever=runs_recorded_ever,
+        first_recorded=first_recorded,
     )
 
     print(as_status_json(status) if args.json else render_status(status, limit=args.limit))
@@ -629,6 +705,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_bands.add_argument("--json", action="store_true", help="machine-readable output")
     p_bands.set_defaults(func=cmd_bands)
+
+    p_trend = sub.add_parser(
+        "trend",
+        help="a shift too small to ever cross warn_k on one run, seen across many",
+        parents=[common],
+    )
+    p_trend.add_argument("--probe", action="append", help="limit to this probe id (repeatable)")
+    p_trend.add_argument(
+        "--window", type=int, default=5,
+        help="runs per side to compare, earliest vs. most recent (default: 5)",
+    )
+    p_trend.add_argument(
+        "--strict", action="store_true", help="exit 2 if any signal shows a sustained shift"
+    )
+    p_trend.add_argument("--json", action="store_true", help="machine-readable output")
+    p_trend.set_defaults(func=cmd_trend)
 
     p_status = sub.add_parser(
         "status", help="is the canary itself alive and reporting?", parents=[common]

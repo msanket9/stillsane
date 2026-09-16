@@ -1004,6 +1004,106 @@ def test_bands_orders_output_the_same_way_check_does(tmp_path, monkeypatch, caps
     assert check_order == expected
 
 
+def test_status_shows_the_unbounded_history_span(tmp_path, monkeypatch, capsys):
+    """Wiring check for `cmd_status` -> `History.run_span()` -> `assess()`:
+    the arithmetic itself is covered in `test_status.py`, this only confirms
+    the CLI actually passes the real span through rather than, say, swapping
+    the tuple order or leaving the new kwargs unset.
+    """
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(CONFIG))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    capsys.readouterr()
+    for _ in range(3):
+        cli.main(["-c", str(config_path), "check"])
+    capsys.readouterr()
+
+    assert cli.main(["-c", str(config_path), "status"]) == 0
+    out = capsys.readouterr().out
+    assert "history since" in out
+    assert "3 run(s) recorded" in out
+
+    assert cli.main(["-c", str(config_path), "status", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["runs_recorded_ever"] == 3
+    assert payload["first_recorded"] is not None
+
+
+def test_trend_without_a_baseline_is_an_error_not_a_crash(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(CONFIG))
+    code = cli.main(["-c", str(config_path), "trend"])
+    assert code == 1
+    assert "No baselines captured yet" in capsys.readouterr().err
+
+
+def test_trend_reads_real_history_end_to_end(tmp_path, monkeypatch, capsys):
+    """Full pipeline smoke test: baseline, several clean checks, then `trend`
+    reads what `check` actually wrote to `history.sqlite` and says something
+    sane about it. The precise shift-detection arithmetic is covered directly
+    in `test_trend.py`; this only exercises the wiring between `bands.inspect`
+    (for today's reference band), `History.trend_window` (for the recorded
+    rows) and the CLI/JSON output.
+    """
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(CONFIG))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    capsys.readouterr()
+
+    for _ in range(6):
+        assert cli.main(["-c", str(config_path), "check"]) == 0
+    capsys.readouterr()
+
+    assert cli.main(["-c", str(config_path), "trend"]) == 0
+    out = capsys.readouterr().out
+    assert "extract_invoice @ prod" in out
+    # STABLE cycles the same handful of byte-similar texts throughout, so
+    # nothing should look like a sustained shift.
+    assert "SUSTAINED SHIFT" not in out
+
+    assert cli.main(["-c", str(config_path), "trend", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["command"] == "trend"
+    assert data["shifted"] == 0
+    assert any(row["signal"] == "length_chars" for row in data["signals"])
+
+    # --strict must not fail a build merely because nothing shifted.
+    assert cli.main(["-c", str(config_path), "trend", "--strict"]) == 0
+
+
+def test_trend_is_scoped_to_the_current_baseline_version(tmp_path, monkeypatch, capsys):
+    """Recapturing must reset what `trend` compares against -- runs recorded
+    under the old baseline must not be visible to a signal's history once a
+    new version is on disk.
+    """
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(CONFIG))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    capsys.readouterr()
+    for _ in range(4):
+        cli.main(["-c", str(config_path), "check"])
+    capsys.readouterr()
+
+    # Recapture: a new baseline version, with no check runs against it yet.
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    capsys.readouterr()
+
+    cli.main(["-c", str(config_path), "trend", "--json"])
+    data = json.loads(capsys.readouterr().out)
+    # Every signal reads as missing -- v1's 4 runs are invisible to v2.
+    assert data["signals"] == []
+    assert any(row["n"] == 0 for row in data["missing"])
+
+
 def test_missing_api_key_is_an_error_not_a_traceback(tmp_path, monkeypatch, capsys):
     """A missing `api_key_env` used to raise `RuntimeError` from `build_request`,
     uncaught anywhere, and an uncaught exception exits 1 -- the DRIFT code. A CI

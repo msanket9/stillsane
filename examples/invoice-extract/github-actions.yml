@@ -31,6 +31,27 @@ jobs:
           path: ~/.cache/huggingface
           key: stillsane-embedding-model
 
+      # Every checkout starts fresh, so without this `status`, `history` and
+      # `calibrate` would have nothing to read -- the README's "since when?"
+      # promise does not hold in this deployment otherwise. `key` is unique to
+      # this run, so it never hits and every run instead restores the most
+      # recent entry via `restore-keys`, then saves its own (now one run newer)
+      # copy back at the end of the job for the next run to pick up.
+      #
+      # This is best-effort, not durable: a cache eviction (GitHub prunes
+      # unused entries, default 7-day cutoff) silently resets history with no
+      # run ever failing. `stillsane status` prints "history since <date>, N
+      # runs" from the database's true, unbounded age specifically so a reset
+      # like that is visible rather than silent -- watch that line, not just
+      # the exit code.
+      - name: Restore drift history
+        uses: actions/cache@v4
+        with:
+          path: .stillsane/history.sqlite
+          key: stillsane-history-${{ github.run_id }}
+          restore-keys: |
+            stillsane-history-
+
       - run: pip install stillsane
 
       - name: Check for drift

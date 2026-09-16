@@ -208,13 +208,14 @@ def test_usable_excludes_errored_samples(tmp_path):
 # --- History --------------------------------------------------------------
 
 
-def _run(level=Level.DRIFT):
+def _run(level=Level.DRIFT, baseline_version=None):
     return RunResult(
         probes=[
             ProbeVerdict(
                 probe_id="p",
                 target_name="prod",
                 level=level,
+                baseline_version=baseline_version,
                 signals=[
                     SignalVerdict(
                         signal="semantic_distance",
@@ -252,3 +253,110 @@ def test_history_is_created_on_demand(tmp_path):
     history = History(tmp_path / "nested" / "deeper")
     history.record(_run(Level.PASS))
     assert history.path.exists()
+
+
+def test_run_span_covers_every_run_regardless_of_level(tmp_path):
+    """Unlike `clean_run_span`, this is not restricted to `pass` -- `status`
+    uses it to show the database's true age, which must not be blind to a
+    history that is mostly errors and warnings.
+    """
+    history = History(tmp_path)
+    history.record(_run(Level.PASS))
+    history.record(_run(Level.ERROR))
+    history.record(_run(Level.DRIFT))
+    count, earliest, latest = history.run_span()
+    assert count == 3
+    assert earliest is not None and latest is not None
+
+
+def test_run_span_is_empty_before_any_run(tmp_path):
+    history = History(tmp_path)
+    count, earliest, latest = history.run_span()
+    assert (count, earliest, latest) == (0, None, None)
+
+
+def test_trend_window_scopes_to_the_exact_baseline_version(tmp_path):
+    """A re-baseline must not have its old runs averaged into the new
+    version's comparison -- see `trend.py` for why."""
+    history = History(tmp_path)
+    for _ in range(4):
+        history.record(_run(baseline_version=1))
+    for _ in range(2):
+        history.record(_run(baseline_version=2))
+
+    total_v1, early_v1, recent_v1 = history.trend_window("p", "prod", "semantic_distance", 1, 5)
+    assert total_v1 == 4
+
+    total_v2, early_v2, recent_v2 = history.trend_window("p", "prod", "semantic_distance", 2, 5)
+    assert total_v2 == 2
+
+    # A version never recorded returns cleanly empty, not an error.
+    total_v3, early_v3, recent_v3 = history.trend_window("p", "prod", "semantic_distance", 3, 5)
+    assert (total_v3, early_v3, recent_v3) == (0, [], [])
+
+
+def test_trend_window_early_and_recent_are_chronological_not_truncated_together(tmp_path):
+    """Regression for a real bug caught before it shipped: a single
+    `ORDER BY started ASC LIMIT window` page can only ever return the
+    *earliest* rows, so a naive implementation built on one bounded query
+    would make the "recent" window impossible to see once a probe outlived
+    the page size. Each end needs its own query.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from stillsane.models import RunResult as RR
+
+    history = History(tmp_path)
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    for i in range(10):
+        rr = RR(
+            started=base + timedelta(days=i),
+            finished=base + timedelta(days=i, minutes=1),
+            probes=[
+                ProbeVerdict(
+                    probe_id="p", target_name="prod", level=Level.PASS, baseline_version=1,
+                    signals=[
+                        SignalVerdict(
+                            signal="length_chars", kind=None, level=Level.PASS,
+                            detail="", observed=float(i),
+                        )
+                    ],
+                )
+            ],
+        )
+        history.record(rr)
+
+    total, early, recent = history.trend_window("p", "prod", "length_chars", 1, window=3)
+    assert total == 10
+    assert early == [0.0, 1.0, 2.0]
+    assert recent == [7.0, 8.0, 9.0]
+
+
+def test_trend_window_pre_migration_rows_are_excluded_not_guessed(tmp_path):
+    """A `results` row written before `baseline_version` existed comes back
+    NULL, and NULL never equals an integer version -- so it is correctly
+    invisible to every version-scoped query rather than silently attributed
+    to whichever version happens to be current now.
+    """
+    import sqlite3
+
+    history = History(tmp_path)
+    with history._connect():
+        pass  # creates the (current-shape) database
+
+    conn = sqlite3.connect(history.path)
+    conn.execute(
+        "INSERT INTO runs (run_id, started, finished, level, retries) "
+        "VALUES ('legacy', '2020-01-01T00:00:00', '2020-01-01T00:00:00', 'pass', 0)"
+    )
+    conn.execute(
+        "INSERT INTO results (run_id, probe_id, target, signal, level, observed, "
+        "baseline, z, p_value, band_upper, band_lower, detail, baseline_version) "
+        "VALUES ('legacy', 'p', 'prod', 'length_chars', 'pass', 5.0, 5.0, 0.0, "
+        "NULL, NULL, NULL, '', NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+    total, early, recent = history.trend_window("p", "prod", "length_chars", 1, window=3)
+    assert (total, early, recent) == (0, [], [])

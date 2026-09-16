@@ -338,6 +338,7 @@ stillsane status --expect-every 24h
 last run        22 minutes ago   pass
 last clean run  22 minutes ago
 runs recorded   6
+history since   2026-07-28, 6 run(s) recorded
 recent          P P E P E P   (oldest to newest)
 
   essay_maintainability @ claude  errored 2 of 5 run(s)
@@ -365,6 +366,16 @@ overstates your coverage. And **silence is not success**: a canary that stopped
 running looks exactly like one with nothing to report, which is what
 `--expect-every` exists to disambiguate. Without it, staleness is unknowable and
 the command says so rather than guessing a cadence from past gaps.
+
+**A third kind of silence is a lost history rather than a stopped canary.** If
+`.stillsane/history.sqlite` lives in a CI cache (see [In CI](#in-ci)) rather than
+somewhere durable, a cache miss resets it without a single run ever failing --
+the canary keeps reporting, it just forgot everything before today. `runs
+recorded` alone looks the same the day after a reset as it does a month in,
+because it is bounded by `--limit`. `history since` is not: it always reflects
+every run this database has ever recorded, so "history since 6 hours ago, 3
+run(s)" after a month of daily runs is the tell that the cache, not the canary,
+is what broke.
 
 `--strict` exits 2 when the canary is unhealthy or overdue, for a second cron job
 whose only purpose is to notice that the first one stopped. `--json` gives the
@@ -542,6 +553,64 @@ between runs needs to tell "still sound" from "no longer reported":
            "lower": null, "upper": 0.02, "n": 31, "floored": true}
 }
 ```
+
+### A shift too small to ever cross the threshold on its own
+
+`check` judges one run at a time, and that is a real blind spot: a provider that
+quietly moves `semantic_distance` from z~0.3 to a steady z~2.4 never crosses
+`warn_k: 3`, so `check` says PASS every single day. The evidence is there --
+every run's own numbers say so -- but nothing ever looks across more than one
+run to notice the floor itself moved. `stillsane trend` does:
+
+```bash
+stillsane trend
+```
+
+```
+extract_invoice @ prod
+  semantic_distance        early z=+0.30  recent z=+2.41  (12 run(s), window 5) SUSTAINED SHIFT
+    moved from 0.0224 (early, inside the normal range) to 0.0631 (recent, past
+    1.80x normal variance) without any single run crossing warn_k -- each run
+    alone still reads as PASS.
+  length_chars              early z=+0.10  recent z=+0.22  (12 run(s), window 5)
+
+1 signal(s) show a sustained shift: semantic_distance on extract_invoice @ prod.
+Each of these has been PASSing every run -- no single check ever crossed
+warn_k -- while the recent median moved somewhere the early median had not.
+That is what this command exists to catch: `check` judges one run at a time and
+cannot see it.
+
+Reads history only: no probe was sampled to produce this. A sustained shift is
+exactly what `stillsane baseline` should absorb once you have looked at it --
+recapturing resets the comparison, since it is scoped to the baseline version
+currently on disk.
+```
+
+It costs nothing: no network, no API key, no new sampling. Per probe/signal, it
+takes the median of the earliest runs recorded against the *current* baseline
+version and the median of the most recent ones (`--window`, default 5 runs per
+side), and expresses both against the same, fixed band `bands` would show today.
+"Fixed" is deliberate -- a signal's band tightens over time as clean runs pool
+into it, so trending the `z` each run recorded *at the time* would be comparing
+numbers measured on different scales and calling the difference a shift. A
+sustained shift is reported when the early group sat inside `warn_k * grey_zone`
+(the same "elevated but not WARN-worthy" fraction the corroboration check
+already uses) and the recent group has moved past it -- not the full `warn_k`
+band itself, since a move that never crosses `warn_k` on a single run will not
+cross it as a multi-run median either, and that move is exactly what this
+command exists to surface before it accumulates into something that does.
+
+Scoped to the baseline version on disk: a sustained shift is exactly what
+`stillsane baseline` should absorb, so runs recorded against a since-replaced
+baseline are never averaged in with current ones -- otherwise the first runs
+after a recapture would read as a shift that is really just the old baseline's
+tail.
+
+`--probe` scopes to one probe. `--strict` exits 2 if any signal shows a
+sustained shift, for a weekly job distinct from the daily `check` -- a
+sustained shift is not itself an alert-worthy event on the day it is first
+seen, it is a pattern worth a human noticing on a slower cadence. `--json`
+gives the same result structured.
 
 ### Config
 
@@ -908,7 +977,7 @@ unaffected: the verdict stands and the explanation is simply absent.
 Copy
 [`examples/invoice-extract/github-actions.yml`](examples/invoice-extract/github-actions.yml)
 into `.github/workflows/`. It runs `stillsane check` every morning, caches the
-embedding model between runs, and fails the job on drift.
+embedding model and the drift history between runs, and fails the job on drift.
 
 Kept as one file rather than pasted here as a second copy, because two copies of a
 workflow drift apart and the one in the README is the one nobody re-tests.
@@ -916,10 +985,21 @@ workflow drift apart and the one in the README is the one nobody re-tests.
 Two things it relies on:
 
 - **Commit `.stillsane/baselines/`.** The workflow needs something to compare
-  against. They are plain text and diff like code. Leave
-  `.stillsane/history.sqlite` out, since it is a binary that changes every run.
-  Full response bodies are not part of this by default (`store_raw`, above) --
-  only the extracted text and metadata a check actually compares against.
+  against. They are plain text and diff like code. `.stillsane/history.sqlite`
+  is a binary that changes every run, so it does not belong in git either --
+  but every checkout in CI starts fresh, and without *some* history `status`,
+  `history`, `calibrate` and `trend` all have nothing to read, which is not
+  cosmetic: the README's own "since when?" promise does not hold for anyone
+  following these instructions. The workflow instead caches
+  `.stillsane/history.sqlite` with `actions/cache`, keyed per run with a
+  `restore-keys` prefix so each run restores the most recent copy and saves
+  its own back at the end. This is best-effort, not durable -- a cache
+  eviction resets it silently, with no run ever failing -- which is exactly
+  why `stillsane status` prints "history since <date>, N runs" from the
+  database's true, unbounded age: watch that line for a reset, not just the
+  exit code. Full response bodies are not part of any of this by default
+  (`store_raw`, above) -- only the extracted text and metadata a check
+  actually compares against.
 - **A daily schedule is the point.** Provider-side model changes arrive without
   warning; finding out within a day is the entire product.
 
