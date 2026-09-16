@@ -660,6 +660,59 @@ targets:
     response_path: data.reply          # where the text lives in the response
 ```
 
+**Is it my app or the model?** A `type: http` probe against `prod` above fires.
+Which of the three causes was it -- the provider, a prompt edit, or retrieval? On
+its own the tool cannot say. But most apps sit on a model you can also probe
+directly, and running the *same probe text* against both separates the cases:
+moved on the app but not on the raw model means the change is inside the app;
+moved on both is consistent with the provider. List both targets on the probe
+and point the app at its control:
+
+```yaml
+targets:
+  - name: prod
+    type: http
+    base_url: https://your-app.example.com
+    path: /api/extract
+    body: {document: "{{prompt}}"}
+    response_path: data.reply
+    attribute_to: raw   # a target named below
+
+  - name: raw
+    base_url: https://api.openai.com/v1
+    model: gpt-4o-mini
+    api_key_env: OPENAI_API_KEY
+
+probes:
+  - id: extract_invoice
+    targets: [prod, raw]   # both, or there is nothing to compare against
+    prompt: "Extract the total and due date as JSON from: ..."
+    checks: [valid_json, {has_keys: [total, due_date]}]
+```
+
+When `prod` moves, the report gains one line:
+
+```
+DRIFT  extract_invoice @ prod
+  semantic_distance           0.133  band <=0.05626           z=+8.9
+  ...
+  -> attribution: 'raw' (control) did not move -- looks local to 'prod', not the
+     provider. Not proof 'raw' itself is unchanged: 'prod' likely wraps its own
+     system prompt and retrieval.
+```
+
+No new sampling: this costs exactly what listing two targets on the probe
+already costs, and needs both to have actually run in the same check -- a
+control missing a baseline, or simply not scoped to this probe, leaves the line
+off rather than guessing. It is never proof either way, only ever "the model's
+behaviour on this exact text did or did not move", which the line always says in
+full rather than leaving implied -- the app wraps the same text in its own system
+prompt and retrieval, so a quiet control is not a clean bill of health for the
+app's own model. Fingerprints are deliberately excluded from "did the control
+move": they vary by account and region even against an unchanged model, so a
+fingerprint-only blip on the control would make attribution noisier than the
+thing it is meant to corroborate.
+
 **Providers that do not use `Authorization: Bearer`.** Anthropic wants
 `x-api-key` with no prefix, Azure wants `api-key`. Both are reachable without
 putting a live secret in `headers`:

@@ -102,6 +102,54 @@ def test_repeat_every_is_read_via_config_not_just_the_model():
     assert cfg.alerts.repeat_every == 0
 
 
+# --- attribute_to (raw-model control) ---------------------------------------
+
+
+def _with_control():
+    return {
+        "targets": [
+            {**MINIMAL["targets"][0], "name": "prod", "attribute_to": "raw"},
+            {**MINIMAL["targets"][0], "name": "raw"},
+        ],
+        "probes": [{**MINIMAL["probes"][0], "targets": ["prod", "raw"]}],
+    }
+
+
+def test_attribute_to_defaults_to_none():
+    assert TargetConfig(name="t", base_url="https://x", model="m").attribute_to is None
+
+
+def test_attribute_to_accepts_a_real_target():
+    cfg = Config.model_validate(_with_control())
+    assert cfg.target("prod").attribute_to == "raw"
+
+
+def test_attribute_to_an_unknown_target_is_rejected():
+    bad = _with_control()
+    bad["targets"][0]["attribute_to"] = "nope"
+    with pytest.raises(ValidationError, match="not a target this config defines"):
+        Config.model_validate(bad)
+
+
+def test_attribute_to_itself_is_rejected():
+    bad = _with_control()
+    bad["targets"][0]["attribute_to"] = "prod"
+    with pytest.raises(ValidationError, match="cannot be its own control"):
+        Config.model_validate(bad)
+
+
+def test_attribute_to_does_not_affect_the_baseline_hash():
+    """Pairing a control target is a report-time annotation, not a change to
+    what gets sampled or compared -- pointing `attribute_to` at a different
+    target, or unsetting it, must never invalidate an existing baseline."""
+    target = TargetConfig(name="prod", base_url="https://a/v1", model="m")
+    target_with_control = TargetConfig(
+        name="prod", base_url="https://a/v1", model="m", attribute_to="raw"
+    )
+    probe = ProbeConfig(id="p", prompt="x")
+    assert config_hash(probe, target) == config_hash(probe, target_with_control)
+
+
 def test_duplicate_names_are_rejected():
     bad = {**MINIMAL, "targets": MINIMAL["targets"] * 2}
     with pytest.raises(ValidationError, match="duplicate target names"):

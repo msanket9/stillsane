@@ -64,6 +64,10 @@ def payload_for(result: RunResult) -> dict:
                 # "the question does not apply" rather than "zero".
                 "first_seen": p.first_seen,
                 "consecutive_runs": p.consecutive_runs,
+                # Set only when this probe moved, its target has
+                # `attribute_to`, and the same probe also ran against that
+                # control target this run -- see `runner._attribution_note`.
+                "attribution": p.attribution,
                 "moved": [
                     {
                         "signal": sv.signal,

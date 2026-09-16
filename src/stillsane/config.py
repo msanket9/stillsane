@@ -72,6 +72,19 @@ class TargetConfig(BaseModel):
     #: Whether a changed fingerprint fails the build or merely reports.
     escalate_fingerprint: bool = False
 
+    #: Name of another target to treat as this one's raw-model control. A
+    #: `type: http` probe against your own app cannot say, on its own,
+    #: whether a move came from the provider, a prompt edit, or retrieval
+    #: inside the app -- but the same probe text run against the underlying
+    #: model directly can separate the first case from the other two: moved
+    #: here but not on the control means the change is inside this target;
+    #: moved on both is consistent with the provider. Only fires when the
+    #: same probe actually ran against both targets in the same run (the
+    #: probe's own `targets:` has to list both), and never conclusive on its
+    #: own -- see `runner._attribution_note` for the exact wording and the
+    #: caveats it always carries.
+    attribute_to: str | None = None
+
     #: Persist each sample's full decoded response body into `samples.jsonl` at
     #: baseline capture time. Off by default: nothing in stillsane reads it --
     #: no signal, no report, no comparison -- and the README tells people to
@@ -400,6 +413,24 @@ class Config(BaseModel):
                 raise ValueError(
                     f"probe {probe.id!r} references unknown target(s): "
                     f"{', '.join(sorted(unknown))}"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _attribute_to_exists(self) -> Config:
+        known = {t.name for t in self.targets}
+        for target in self.targets:
+            if target.attribute_to is None:
+                continue
+            if target.attribute_to == target.name:
+                raise ValueError(
+                    f"target {target.name!r} has `attribute_to: {target.name!r}` -- "
+                    "a target cannot be its own control"
+                )
+            if target.attribute_to not in known:
+                raise ValueError(
+                    f"target {target.name!r} has `attribute_to: {target.attribute_to!r}`, "
+                    "which is not a target this config defines"
                 )
         return self
 

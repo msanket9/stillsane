@@ -154,6 +154,9 @@ def render_probe(verdict: ProbeVerdict, paint: Painter, verbose: bool = False) -
 
     if verdict.level is not Level.PASS:
         lines += _excerpt_block(verdict, paint)
+        if verdict.attribution:
+            lines.append("")
+            lines.append(paint.dim(f"  -> {verdict.attribution}"))
         if verdict.judge_note:
             lines.append("")
             lines.append(paint.dim(f"  -> {verdict.judge_note}"))

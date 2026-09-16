@@ -905,6 +905,189 @@ def test_a_malformed_webhook_url_does_not_crash_the_check(env, monkeypatch, caps
     assert "could not deliver alert" in capsys.readouterr().err
 
 
+# --- Attribution: is it my app or the model? --------------------------------
+
+
+_ATTRIBUTION_CONFIG = {
+    "embedder": "hashing",
+    "targets": [
+        {
+            "name": "prod",
+            "base_url": "https://app.example.com/v1",
+            "model": "some-model",
+            "attribute_to": "raw",
+        },
+        {"name": "raw", "base_url": "https://api.example.com/v1", "model": "some-model"},
+    ],
+    "probes": [
+        {
+            "id": "extract_invoice",
+            "targets": ["prod", "raw"],
+            "prompt": "Extract the total and due date as JSON.",
+            "baseline_samples": 5,
+            "check_samples": 3,
+            "checks": ["valid_json", {"has_keys": ["total", "due_date"]}],
+        }
+    ],
+}
+
+
+def _routed_client(prod_texts, raw_texts, fingerprint="fp_a4f2b1"):
+    """A fake provider that answers differently depending on which target's
+    `base_url` the request went to, so `prod` and `raw` can be driven
+    independently within one run."""
+    prod_cycle = itertools.cycle(prod_texts)
+    raw_cycle = itertools.cycle(raw_texts)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        content = next(raw_cycle if "api.example.com" in str(request.url) else prod_cycle)
+        return httpx.Response(
+            200,
+            json={
+                "model": "some-model",
+                "system_fingerprint": fingerprint,
+                "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 20, "completion_tokens": len(content) // 4},
+            },
+        )
+
+    return _RealAsyncClient(transport=httpx.MockTransport(handler))
+
+
+def _attribution_env(tmp_path):
+    config = Config.model_validate(_ATTRIBUTION_CONFIG)
+    return config, BaselineStore(tmp_path), History(tmp_path)
+
+
+def _attribution_baseline(config, store):
+    async def go():
+        async with _routed_client(STABLE, STABLE) as client:
+            return await capture_baseline(config, store, client=client)
+
+    return asyncio.run(go())
+
+
+def _attribution_check(config, store, history, prod_texts, raw_texts):
+    async def go():
+        async with _routed_client(prod_texts, raw_texts) as client:
+            return await check(config, store, history, client=client)
+
+    return asyncio.run(go())
+
+
+def test_attribution_points_at_the_app_when_the_control_held_steady(tmp_path):
+    """The report's own motivating case: the app moved, the raw model on the
+    same probe text did not -- the change is local to the app."""
+    config, store, history = _attribution_env(tmp_path)
+    _attribution_baseline(config, store)
+    result = _attribution_check(config, store, history, DRIFTED, STABLE)
+
+    by_target = {p.target_name: p for p in result.probes}
+    assert by_target["prod"].level is not Level.PASS
+    assert by_target["raw"].level is Level.PASS
+    assert by_target["prod"].attribution is not None
+    assert "did not move" in by_target["prod"].attribution
+    assert "local to 'prod'" in by_target["prod"].attribution
+    # The control's own verdict never gets a note about itself.
+    assert by_target["raw"].attribution is None
+
+
+def test_attribution_points_at_the_provider_when_both_moved(tmp_path):
+    config, store, history = _attribution_env(tmp_path)
+    _attribution_baseline(config, store)
+    result = _attribution_check(config, store, history, DRIFTED, DRIFTED)
+
+    by_target = {p.target_name: p for p in result.probes}
+    assert by_target["prod"].attribution is not None
+    assert "moved too" in by_target["prod"].attribution
+    assert "provider-side change" in by_target["prod"].attribution
+
+
+def test_no_attribution_when_the_app_itself_did_not_move(tmp_path):
+    config, store, history = _attribution_env(tmp_path)
+    _attribution_baseline(config, store)
+    result = _attribution_check(config, store, history, STABLE, STABLE)
+
+    by_target = {p.target_name: p for p in result.probes}
+    assert by_target["prod"].level is Level.PASS
+    assert by_target["prod"].attribution is None
+
+
+def test_no_attribution_when_the_control_has_no_baseline(tmp_path):
+    """A control that never had `stillsane baseline` run against it errors on
+    its own comparison -- nothing to attribute against, so the line must stay
+    off rather than treating an ERROR as "did not move"."""
+    config = Config.model_validate(_ATTRIBUTION_CONFIG)
+    store = BaselineStore(tmp_path)
+    history = History(tmp_path)
+
+    # Only capture a baseline for `prod`, never for `raw`.
+    only_prod = Config.model_validate(
+        {**_ATTRIBUTION_CONFIG, "probes": [{**_ATTRIBUTION_CONFIG["probes"][0], "targets": ["prod"]}]}
+    )
+
+    async def go_baseline():
+        async with _routed_client(STABLE, STABLE) as client:
+            return await capture_baseline(only_prod, store, client=client)
+
+    asyncio.run(go_baseline())
+    result = _attribution_check(config, store, history, DRIFTED, STABLE)
+
+    by_target = {p.target_name: p for p in result.probes}
+    assert by_target["prod"].level is not Level.PASS
+    assert by_target["raw"].level is Level.ERROR
+    assert by_target["prod"].attribution is None
+
+
+def test_no_attribution_when_the_probe_is_not_scoped_to_the_control(tmp_path):
+    """`attribute_to` names a target, but the probe still has to actually run
+    against it -- see the README: "both, or there is nothing to compare
+    against". A probe scoped only to `prod` gets no control run to compare.
+    """
+    scoped = Config.model_validate(
+        {**_ATTRIBUTION_CONFIG, "probes": [{**_ATTRIBUTION_CONFIG["probes"][0], "targets": ["prod"]}]}
+    )
+    store = BaselineStore(tmp_path)
+    history = History(tmp_path)
+
+    async def go_baseline():
+        async with _routed_client(STABLE, STABLE) as client:
+            return await capture_baseline(scoped, store, client=client)
+
+    asyncio.run(go_baseline())
+
+    async def go_check():
+        async with _routed_client(DRIFTED, STABLE) as client:
+            return await check(scoped, store, history, client=client)
+
+    result = asyncio.run(go_check())
+    assert len(result.probes) == 1
+    assert result.probes[0].target_name == "prod"
+    assert result.probes[0].attribution is None
+
+
+def test_attribution_line_appears_in_the_text_report(tmp_path):
+    config, store, history = _attribution_env(tmp_path)
+    _attribution_baseline(config, store)
+    result = _attribution_check(config, store, history, DRIFTED, STABLE)
+    text = render(result, colour=False)
+    assert "-> attribution:" in text
+    assert "local to 'prod'" in text
+
+
+def test_attribution_is_in_the_alert_payload(tmp_path):
+    config, store, history = _attribution_env(tmp_path)
+    _attribution_baseline(config, store)
+    result = _attribution_check(config, store, history, DRIFTED, STABLE)
+    payload = payload_for(result)
+    row = next(p for p in payload["probes"] if p["target"] == "prod")
+    assert row["attribution"] is not None
+    assert "did not move" in row["attribution"]
+    control_row = next(p for p in payload["probes"] if p["target"] == "raw")
+    assert control_row["attribution"] is None
+    json.dumps(payload)
+
+
 class _Ok:
     def __init__(self, status_code: int = 200) -> None:
         self.status_code = status_code

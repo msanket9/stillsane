@@ -374,6 +374,28 @@ async def check(
     order = {(p.probe.id, p.target_config.name): i for i, p in enumerate(plans)}
     verdicts.sort(key=lambda v: order.get((v.probe_id, v.target_name), 0))
 
+    # Attribution: is a move here explained by the same move on a paired
+    # raw-model target, or not? Needs every plan's verdict already built for
+    # this run -- the whole point is comparing two targets' verdicts on the
+    # *same* probe within one run -- so this runs once here rather than
+    # per-plan inside the sampling loop above, and needs no history or
+    # network of its own: nothing beyond what listing two targets already cost.
+    targets_by_name = {t.name: t for t in config.targets}
+    verdicts_by_key = {(v.probe_id, v.target_name): v for v in verdicts}
+    for verdict in verdicts:
+        if verdict.level is Level.PASS:
+            continue
+        target_config = targets_by_name.get(verdict.target_name)
+        control_name = target_config.attribute_to if target_config else None
+        if not control_name:
+            continue
+        control = verdicts_by_key.get((verdict.probe_id, control_name))
+        if control is None or control.level is Level.ERROR:
+            # Not scoped to run against the control in this run, or the
+            # control run itself errored -- nothing to attribute against.
+            continue
+        verdict.attribution = _attribution_note(verdict, control, control_name)
+
     result = build_run(verdicts)
     if history:
         # Before this run is itself recorded: `probe_recent_levels` must see
@@ -390,6 +412,44 @@ async def check(
                 run_samples.append(run_id, samples, store_raw=plan.target_config.store_raw)
             run_samples.prune()
     return result
+
+
+def _control_moved(verdict: ProbeVerdict) -> bool:
+    """Did anything but the fingerprint move on this verdict?
+
+    Fingerprints differ per account and per region even against the same
+    unchanged model, so a fingerprint-only WARN on the control target is not
+    evidence the underlying model moved -- attributing off it alone would
+    make the control noisier than the thing it is meant to corroborate.
+    Every other signal is fair game: a control that moved on
+    `semantic_distance` or `valid_json` genuinely behaved differently.
+    """
+    return any(sv.level is not Level.PASS for sv in verdict.signals if sv.signal != "fingerprint")
+
+
+def _attribution_note(verdict: ProbeVerdict, control: ProbeVerdict, control_name: str) -> str:
+    """One line answering "is this my app or the model?" for a probe that
+    moved and has a paired raw-model control.
+
+    Never the final word, on purpose: the control probe usually skips the
+    app's own system prompt and retrieval, so it is a different question
+    asked of the same model, not a re-run of the app's own request. Moving
+    together is consistent with a provider change; moving alone is
+    consistent with the change being local. Neither is proof -- see the
+    caveat baked into both branches below, which the report always shows
+    alongside the conclusion rather than letting the headline stand alone.
+    """
+    if _control_moved(control):
+        return (
+            f"attribution: {control_name!r} (control) moved too -- consistent with a "
+            f"provider-side change, not something local to {verdict.target_name!r}."
+        )
+    return (
+        f"attribution: {control_name!r} (control) did not move -- looks local to "
+        f"{verdict.target_name!r}, not the provider. Not proof {control_name!r} "
+        f"itself is unchanged: {verdict.target_name!r} likely wraps its own system "
+        "prompt and retrieval."
+    )
 
 
 def _probe_streak(prior_levels: list[tuple[str, int]], current_finished: str) -> tuple[str, int]:

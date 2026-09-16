@@ -211,6 +211,12 @@ class ProbeVerdict:
     baseline_created: str | None = None
     #: Populated only when the judge ran, i.e. only when a band was already crossed.
     judge_note: str | None = None
+    #: Populated only when this probe moved, its target has `attribute_to`
+    #: set, and the same probe also ran against that control target in this
+    #: same run -- see `runner._attribution_note`. Says whether the control
+    #: moved too (consistent with the provider) or did not (consistent with
+    #: the change being inside this target), never anything stronger.
+    attribution: str | None = None
     #: Representative outputs for the report's before/after block.
     baseline_excerpt: str | None = None
     observed_excerpt: str | None = None
