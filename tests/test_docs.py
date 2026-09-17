@@ -242,7 +242,9 @@ def test_documented_config_keys_exist():
     # Two other things legitimately appear as keys in a yaml block: the check names
     # accepted under `checks:`, which are identifiers rather than model fields, and
     # whatever the user puts in `body:`, which is their request shape and not ours.
-    check_names = {"valid_json", "has_keys", "semantic_similarity", "max_length"}
+    check_names = {
+        "valid_json", "has_keys", "semantic_similarity", "max_length", "constant_fields",
+    }
     body_keys = {"role", "content", "document", "messages", "message"}
     strays = documented - known - check_names - body_keys
     assert not strays, f"README documents config keys that no model accepts: {sorted(strays)}"

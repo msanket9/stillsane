@@ -953,6 +953,7 @@ from any `claude_code` target with the probe's own `targets:` field.
 | `has_keys: [a, b]` | Those keys are present in the JSON, found leniently. Deliberately separate from `valid_json`, so the report can say the data survived even when the envelope broke. |
 | `semantic_similarity: auto` | Learn the band. A number instead of `auto` pins a fixed threshold. |
 | `max_length: 2000` | Hard cap on response length. |
+| `constant_fields: [total, due_date]` | Those fields' *values*, found leniently, must stay whatever the baseline learned them to be. |
 
 Several signals are always on and need no configuration: semantic distance, JSON
 shape, tool-call shape, length, completion tokens, cost, latency, provider
@@ -968,6 +969,56 @@ stay close to it right up to where it stops -- everything up to the cutoff is
 genuine content. Reads `finish_reason` (OpenAI-shaped targets) or `stop_reason`
 (Anthropic, checked generically so a raw `http` target gets it too), and is silent
 rather than guessing on a provider that exposes neither.
+
+**`constant_fields` exists because the flagship example above has a gap.**
+`extract_invoice` pulls `total: 1240.50` out of an invoice. If the model starts
+returning `1204.50` -- a transposition, not a formatting change -- `valid_json`
+still passes, `has_keys` still passes, and `semantic_distance` on a 45-character
+JSON string is not built to notice a single digit swap; whether it happens to land
+inside a learned band is luck. That is a content change on the exact probe this
+README leads with, and nothing was aimed at it until this check:
+
+```yaml
+checks:
+  - valid_json
+  - has_keys: [total, due_date]
+  - constant_fields: [total]
+```
+
+```
+DRIFT  extract_invoice @ prod
+  constant_field[total]              1204.5
+  2 other signal(s) unchanged
+
+  baseline (v1, 2026-08-04):
+    {"total": 1240.50, "due_date": "2026-07-01"}
+  now:
+    {"total": 1204.50, "due_date": "2026-07-01"}
+```
+
+The row itself shows only the new value; the baseline value it learned (`1240.50`)
+is named just below, in the same before/after block every other content signal
+uses -- and in `--json`/the webhook payload, `detail` spells out the transition
+directly as `"1240.5 -> 1204.5"`.
+
+**Learned, not asserted.** The expected value is never typed into config -- it is
+read off the baseline the same lenient way `has_keys` reads presence, and whatever
+value (or values) it finds there becomes the known-good set. A field that took more
+than one value across baseline samples stays exactly that tolerant afterwards; only
+a value genuinely never seen at baseline is reported, so a field that legitimately
+varies is not locked onto the first sample that happened to run. Floats are
+compared numerically (`1240.5` and `1240.50` parse identically, but `1240` and
+`1240.0` do not by plain string comparison, and normalising through `float()` first
+is what keeps a dropped decimal point from reading as the total changing). A field
+missing from the response entirely is `has_keys`'s question, not this one's --
+`constant_fields` stays silent on it rather than duplicating that finding.
+
+**Opt-in per field, not automatic across every key.** Five baseline samples cannot
+prove a field never legitimately varies; locking every extracted key in by default
+would page someone the first time a field that varies one time in twenty happens
+to do so on baseline capture. Naming the fields worth watching is the point --
+`total` and `due_date` matter for an invoice extractor; a `notes` field probably
+does not.
 
 ### Generating probes from logs
 

@@ -20,7 +20,7 @@ from .semantic import (
     default_embedder,
 )
 from .shape import JsonShapeDistance, ToolCallDistance
-from .structural import HasKeys, LengthChars, ValidJson
+from .structural import ConstantField, HasKeys, LengthChars, ValidJson
 
 __all__ = [
     "ALWAYS_ON",
@@ -117,9 +117,17 @@ def build_signals(
             length.name = "max_length"
             length.band_override = float(value)
             signals.append(length)
+        elif name == "constant_fields":
+            if not isinstance(value, list) or not value:
+                raise ValueError("`constant_fields` needs a non-empty list of field names.")
+            # One signal per field, not one signal covering the list: "total
+            # changed" and "due_date changed" are different findings a report
+            # should name separately, unlike `has_keys`, which only ever asks
+            # a single yes/no question about all of them together.
+            signals.extend(ConstantField(field) for field in value)
         else:
             raise ValueError(
                 f"Unknown check {name!r}. Supported: valid_json, has_keys, "
-                "semantic_similarity, max_length."
+                "semantic_similarity, max_length, constant_fields."
             )
     return signals

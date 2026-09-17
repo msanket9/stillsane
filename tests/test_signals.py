@@ -10,10 +10,12 @@ from stillsane.signals import build_signals
 from stillsane.signals.meta import ResponseComplete
 from stillsane.signals.shape import JsonShapeDistance, ToolCallDistance, jaccard_distance, key_paths
 from stillsane.signals.structural import (
+    ConstantField,
     HasKeys,
     LengthChars,
     ValidJson,
     extract_lenient,
+    normalise_field_value,
     parse_strict,
 )
 
@@ -64,6 +66,87 @@ def test_signals_skip_errored_samples():
     assert ValidJson().value(errored) is None
     assert LengthChars().value(errored) is None
     assert HasKeys(["a"]).value(errored) is None
+
+
+# --- constant_fields ---------------------------------------------------------
+
+
+def test_normalise_field_value_collapses_int_and_float_formatting():
+    """The exact false alarm the report warns about: `1240` (int, from a
+    response that dropped the decimal point) and `1240.0` (float) must
+    compare equal, or a formatting wobble alone reads as the total changing.
+    """
+    assert normalise_field_value(1240) == normalise_field_value(1240.0)
+    assert normalise_field_value(1240.50) == normalise_field_value(1240.5)
+
+
+def test_normalise_field_value_still_distinguishes_real_differences():
+    assert normalise_field_value(1240.50) != normalise_field_value(1204.50)
+
+
+def test_normalise_field_value_bool_is_not_treated_as_a_number():
+    """`bool` is a subclass of `int` in Python -- without an explicit check
+    first, `True` would silently normalise to the same string as `1.0`."""
+    assert normalise_field_value(True) != normalise_field_value(1)
+    assert normalise_field_value(True) == "true"
+    assert normalise_field_value(False) == "false"
+
+
+def test_normalise_field_value_null_is_distinct_from_a_string_null():
+    assert normalise_field_value(None) == "null"
+    assert normalise_field_value("null") == "null"
+    # Both normalise to the literal text "null", which is a known, accepted
+    # (if slightly unusual) collision -- a field whose real value is the
+    # string "null" is exotic enough not to design around.
+
+
+def test_normalise_field_value_nested_structures_are_stable():
+    assert normalise_field_value({"b": 2, "a": 1}) == normalise_field_value({"a": 1, "b": 2})
+    assert normalise_field_value([1, 2]) != normalise_field_value([2, 1])
+
+
+def test_constant_field_reads_the_named_key():
+    s = sample('{"total": 1240.50, "due_date": "2026-07-01"}')
+    assert ConstantField("total").value(s) == "1240.5"
+    assert ConstantField("due_date").value(s) == "2026-07-01"
+
+
+def test_constant_field_is_none_when_the_field_is_missing():
+    """Missing entirely is `has_keys`'s question, not this one's -- `None`
+    means 'contributes to neither side of the comparison', not 'changed to
+    nothing'."""
+    s = sample('{"due_date": "2026-07-01"}')
+    assert ConstantField("total").value(s) is None
+
+
+def test_constant_field_is_none_for_non_json_text():
+    assert ConstantField("total").value(sample("just prose, no JSON here")) is None
+
+
+def test_constant_field_skips_errored_samples():
+    assert ConstantField("total").value(sample("", error="timeout")) is None
+
+
+def test_constant_fields_creates_one_signal_per_field(embedder):
+    """"total changed" and "due_date changed" are different findings a
+    report should name separately -- unlike `has_keys`, which asks one
+    combined yes/no question about every key in its list.
+    """
+    names = [s.name for s in build_signals([{"constant_fields": ["total", "due_date"]}], embedder)]
+    assert "constant_field[total]" in names
+    assert "constant_field[due_date]" in names
+
+
+def test_constant_fields_needs_a_list(embedder):
+    with pytest.raises(ValueError, match="non-empty list"):
+        build_signals([{"constant_fields": "total"}], embedder)
+    with pytest.raises(ValueError, match="non-empty list"):
+        build_signals([{"constant_fields": []}], embedder)
+
+
+def test_unknown_check_message_mentions_constant_fields(embedder):
+    with pytest.raises(ValueError, match="constant_fields"):
+        build_signals(["definitely_not_a_check"], embedder)
 
 
 # --- Truncation -------------------------------------------------------------

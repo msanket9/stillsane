@@ -541,3 +541,110 @@ def test_min_confident_n_counts_baseline_samples_not_pairs(signals_for):
     semantic = next(s for s in verdict.signals if s.signal == "semantic_distance")
     assert semantic.level is Level.WARN
     assert "band from only 4 samples, capped to warn" in semantic.detail
+
+
+# --- Silent content change (constant_fields) --------------------------------
+
+
+def test_a_digit_swap_passes_valid_json_and_has_keys(signals_for):
+    """The exact gap `constant_fields` exists to close, on the exact probe
+    the README leads with. `total` drops from 1240.50 to 1204.50 -- a
+    transposition, not a formatting change -- and neither of this probe's
+    existing structural checks notices: the envelope is still valid JSON and
+    both keys are still present. (`semantic_distance` is a separate story --
+    the report's own point is that whether *it* notices a 45-character JSON
+    string's single digit swap is luck, not that it never does; asserting
+    the whole verdict stays PASS here would make this test depend on the
+    embedder's exact behaviour on this exact text pair rather than on the
+    specific claim being tested.)
+    """
+    swapped = [
+        '{"total": 1204.50, "due_date": "2026-07-01"}',
+        '{"total": 1204.5, "due_date": "2026-07-01"}',
+        '{"due_date": "2026-07-01", "total": 1204.50}',
+    ]
+    verdict = run(signals_for, STABLE_JSON, swapped, CHECKS)
+    assert not any(sv.signal == "valid_json" for sv in verdict.moved)
+    assert not any(sv.signal.startswith("has_keys") for sv in verdict.moved)
+
+
+def test_constant_fields_catches_the_same_digit_swap(signals_for):
+    swapped = [
+        '{"total": 1204.50, "due_date": "2026-07-01"}',
+        '{"total": 1204.5, "due_date": "2026-07-01"}',
+        '{"due_date": "2026-07-01", "total": 1204.50}',
+    ]
+    verdict = run(
+        signals_for, STABLE_JSON, swapped, [*CHECKS, {"constant_fields": ["total"]}]
+    )
+    assert verdict.level is Level.DRIFT
+    cf = next(s for s in verdict.signals if s.signal == "constant_field[total]")
+    assert cf.level is Level.DRIFT
+    assert "1240.5" in cf.detail and "1204.5" in cf.detail
+
+
+def test_constant_fields_does_not_fire_on_int_vs_float_formatting(signals_for):
+    """A provider that starts returning a whole number as a bare integer
+    (`1240`) instead of a float (`1240.00`) -- same value, different JSON
+    number formatting -- must not read as the total changing. `str(1240)` is
+    `"1240"` and `str(1240.0)` is `"1240.0"`; without normalising both
+    through `float()` first, that formatting difference alone would read as
+    a drifted total.
+    """
+    whole_number_baseline = [
+        '{"total": 1240.00, "due_date": "2026-07-01"}',
+        '{"total": 1240.0, "due_date": "2026-07-01"}',
+        '{"due_date": "2026-07-01", "total": 1240.00}',
+        '{"total": 1240.00,  "due_date": "2026-07-01"}',
+        '{"total": 1240.00, "due_date": "2026-07-01"}',
+    ]
+    reformatted_as_int = ['{"total": 1240, "due_date": "2026-07-01"}'] * 3
+    verdict = run(
+        signals_for,
+        whole_number_baseline,
+        reformatted_as_int,
+        [*CHECKS, {"constant_fields": ["total"]}],
+    )
+    assert not any(sv.signal == "constant_field[total]" for sv in verdict.moved), [
+        (s.signal, s.level, s.detail) for s in verdict.moved
+    ]
+
+
+def test_constant_fields_tolerates_a_baseline_that_legitimately_varied(signals_for):
+    """A field that took more than one value at baseline must stay exactly
+    that tolerant afterwards -- only a value genuinely never seen at
+    baseline is drift, or a field that varies one time in five would page
+    someone on the very next run that happened to redraw the other value.
+    """
+    varying = [
+        '{"total": 1240.50, "due_date": "2026-07-01"}',
+        '{"total": 1240.51, "due_date": "2026-07-01"}',
+        '{"total": 1240.50, "due_date": "2026-07-01"}',
+        '{"total": 1240.51, "due_date": "2026-07-01"}',
+        '{"total": 1240.50, "due_date": "2026-07-01"}',
+    ]
+    only_seen_values = ['{"total": 1240.51, "due_date": "2026-07-01"}'] * 3
+    verdict = run(
+        signals_for, varying, only_seen_values, [*CHECKS, {"constant_fields": ["total"]}]
+    )
+    assert not any(sv.signal == "constant_field[total]" for sv in verdict.moved)
+
+    genuinely_new = ['{"total": 1240.52, "due_date": "2026-07-01"}'] * 3
+    verdict2 = run(
+        signals_for, varying, genuinely_new, [*CHECKS, {"constant_fields": ["total"]}]
+    )
+    cf = next(s for s in verdict2.signals if s.signal == "constant_field[total]")
+    assert cf.level is Level.DRIFT
+
+
+def test_constant_fields_defers_a_missing_field_to_has_keys(signals_for):
+    """When the field disappears entirely, `has_keys` already reports it --
+    `constant_fields` must stay silent rather than duplicating the finding
+    with a less specific message.
+    """
+    no_total = ['{"due_date": "2026-07-01"}'] * 3
+    verdict = run(
+        signals_for, STABLE_JSON, no_total, [*CHECKS, {"constant_fields": ["total"]}]
+    )
+    assert any(sv.signal.startswith("has_keys") and sv.level is Level.DRIFT for sv in verdict.moved)
+    assert not any(sv.signal == "constant_field[total]" for sv in verdict.moved)
