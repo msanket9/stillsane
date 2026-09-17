@@ -153,11 +153,19 @@ document a drift workflow (save a baseline, re-run on a schedule, compare), and 
 you are happy writing the comparison logic yourself, that gets you a good deal of
 what stillsane does.
 
-**What stillsane adds** is that comparison logic: a variance model so the thing
-does not cry wolf, a baseline that refuses to update itself, and fingerprint
-watching. As far as I can tell nothing in the pre-ship category ships a command
-that compares a run against a stored baseline and tells you what moved. That gap
-is the entire reason this exists.
+**What stillsane adds** is the comparison logic and the diagnosis. The comparison
+logic: a variance model so the thing does not cry wolf, a baseline that refuses to
+update itself, and fingerprint watching. As far as I can tell nothing in the
+pre-ship category ships a command that compares a run against a stored baseline
+and tells you what moved -- that gap is the original reason this exists. The
+diagnosis is what "something moved" becomes once you can also answer *since when*
+(`history`, `status`), *whether it is a real shift or noise accumulating below any
+single run's threshold* (`trend`), *whether it is your app or the provider*
+(`attribute_to`), and *how big the last thing you accepted actually was*
+(`baseline --compare-previous`). Put together: not "something moved" but "this
+moved, since Tuesday, in your app rather than the model, by this much relative to
+what you last accepted" -- the question a reader actually has at 9am after a 6am
+alert, not just the fact that woke them up.
 
 ---
 
@@ -1247,6 +1255,19 @@ benchmarking
 And the one that matters most: **stillsane is not an eval framework.** It does not
 measure whether your app is good. It measures whether it *changed* from a known
 baseline. Existing tools measure quality; this measures change.
+
+**Possible, not planned: shared baselines.** A baseline is already plain text
+keyed by a config hash covering prompt, model, checks and embedder, which makes it
+portable in principle. A public repository of baselines for public providers
+("gpt-4o-mini on 2026-09-01 against these twenty probes") would let anyone check
+their own account against a community reference with no hosted service, and the
+fingerprint signal would become a shared early-warning system -- the one idea here
+with a network effect. Not doing it yet: latency and cost are meaningless across
+machines and accounts, fingerprints vary by region, a variance pool grown from
+strangers' clean runs is a trust problem the anchor caps do nothing to address, and
+curating a public set of baselines is a burden that looks a lot like the platform
+this project refuses to be. Unlike the list above, this one is a "not yet" rather
+than a "never" -- it is just not close to the top of that list.
 
 ---
 
