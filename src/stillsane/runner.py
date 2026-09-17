@@ -63,6 +63,17 @@ class Captured:
 
     baseline: Baseline
     floored: list[str]
+    #: Set only when `capture_baseline(..., compare_previous=True)` found a
+    #: version to compare against. `None` either because the flag was off, or
+    #: because this was the first baseline ever captured for this probe/target
+    #: -- `previous_version` tells the two cases apart.
+    previous_comparison: ProbeVerdict | None = None
+    previous_version: int | None = None
+    #: Whether the version just replaced was captured under a different
+    #: config hash. A re-baseline after a prompt edit is the common case this
+    #: exists for, and the comparison must say so rather than let a real
+    #: prompt-driven move read as the provider changing underneath it.
+    config_changed: bool = False
 
 
 def plans_for(config: Config) -> list[Plan]:
@@ -126,8 +137,20 @@ async def capture_baseline(
     store: BaselineStore,
     only: set[str] | None = None,
     client: httpx.AsyncClient | None = None,
+    compare_previous: bool = False,
 ) -> list[Captured]:
-    """Take fresh samples and write a new baseline version for each probe."""
+    """Take fresh samples and write a new baseline version for each probe.
+
+    `compare_previous` answers the question a re-baseline otherwise leaves
+    unasked: a DRIFT fires, the user decides it is the new normal and runs
+    this -- v1 is kept on disk but never looked at again, and the user has
+    just accepted a shift without being told its size. With the flag, the
+    version just replaced is compared against the one just written, using
+    the exact same `compare_probe` a scheduled check would use, and the
+    result rides along on `Captured.previous_comparison` purely for display:
+    it never affects what gets written, never touches the variance pool, and
+    has no exit code of its own -- `cmd_baseline` always returns 0.
+    """
     plans = [p for p in plans_for(config) if not only or p.probe.id in only]
     if not plans:
         return []
@@ -191,7 +214,44 @@ async def capture_baseline(
             baseline, signals, config.thresholds.to_band_config(), plan.probe.check_samples
         )
         floored = [sb.signal for sb in report.signals if sb.band.floored]
-        written.append(Captured(baseline=baseline, floored=floored))
+
+        previous_comparison = None
+        previous_version = None
+        config_changed = False
+        if compare_previous and baseline.version > 1:
+            previous_version = baseline.version - 1
+            previous = store.load(plan.target_config.name, plan.probe.id, version=previous_version)
+            if previous is not None and previous.usable:
+                config_changed = previous.config_hash != baseline.config_hash
+                # The version just replaced *is* the baseline here, and the
+                # version just written is what gets judged against it -- the
+                # same shape as an ordinary check, just with the new samples
+                # standing in for a live run. `previous.pooled` is whatever
+                # variance that old baseline had accumulated by the time it
+                # was replaced, so the band is as informed as a real check
+                # against it would have been on this same day.
+                previous_comparison = compare_probe(
+                    probe_id=plan.probe.id,
+                    target_name=plan.target_config.name,
+                    signals=signals,
+                    baseline=previous.usable,
+                    current=baseline.usable,
+                    cfg=config.thresholds.to_band_config(),
+                    pooled=previous.pooled,
+                    escalate_fingerprint=plan.target_config.escalate_fingerprint,
+                    baseline_version=previous.version,
+                    baseline_created=previous.created,
+                )
+
+        written.append(
+            Captured(
+                baseline=baseline,
+                floored=floored,
+                previous_comparison=previous_comparison,
+                previous_version=previous_version,
+                config_changed=config_changed,
+            )
+        )
     return written
 
 

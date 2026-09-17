@@ -34,7 +34,7 @@ from .generate import (
 )
 from .models import EXIT_CODES, Direction, Level
 from .report import render
-from .runner import capture_baseline, check
+from .runner import Captured, capture_baseline, check
 from .signals import default_embedder
 from .status import as_json as as_status_json
 from .status import assess, parse_every
@@ -177,13 +177,54 @@ def _init_from_logs(args: argparse.Namespace, path: Path) -> int:
     return 0
 
 
+def _print_previous_comparison(captured: Captured) -> None:
+    """The line `--compare-previous` exists for: how different is the
+    version just written from the one it replaced. Informational only --
+    never affects `cmd_baseline`'s exit code, whatever it shows.
+    """
+    if captured.previous_version is None:
+        print("    (first baseline for this probe -- nothing to compare against)")
+        return
+
+    label = f"v{captured.previous_version} -> v{captured.baseline.version}"
+    if captured.config_changed:
+        # The common reason to reach for this flag: a prompt edit. Said here
+        # so a real move reads as "the edit did this", not as the provider
+        # changing underneath an unrelated re-baseline.
+        label += ", config changed"
+
+    comparison = captured.previous_comparison
+    if comparison is None:
+        # The previous version has no usable samples of its own (rare: it
+        # would have failed to capture in the first place) -- nothing to
+        # compare against even though a version number exists.
+        print(f"    {label}: previous version has no usable samples to compare against")
+        return
+
+    print(f"    compared to the version it replaced ({label}):")
+    if not comparison.moved:
+        print("      nothing moved")
+        return
+    for sv in comparison.moved:
+        observed = sv.observed_label or (f"{sv.observed:.4g}" if sv.observed is not None else "")
+        band = f"band {sv.band.describe()}" if sv.band else ""
+        effect = f"z={sv.z:+.1f}" if sv.z is not None else ""
+        if observed or band or effect:
+            print(f"      {sv.signal:<24} {observed:>12}  {band:<20} {effect}")
+        else:
+            print(f"      {sv.signal}: {sv.detail}")
+
+
 def cmd_baseline(args: argparse.Namespace) -> int:
     config = _load(args.config)
     store, _ = _store(config, args.config)
     only = set(args.probe) if args.probe else None
+    compare_previous = getattr(args, "compare_previous", False)
 
     try:
-        written = asyncio.run(capture_baseline(config, store, only=only))
+        written = asyncio.run(
+            capture_baseline(config, store, only=only, compare_previous=compare_previous)
+        )
     except RuntimeError as exc:
         print(f"stillsane: {exc}", file=sys.stderr)
         return EXIT_CODES[Level.ERROR]
@@ -200,6 +241,8 @@ def cmd_baseline(args: argparse.Namespace) -> int:
             f"v{baseline.version}, {n} sample(s)"
             + (f", fingerprint {baseline.fingerprint}" if baseline.fingerprint else "")
         )
+        if compare_previous:
+            _print_previous_comparison(captured)
     print(f"\nCaptured {len(written)} baseline(s). These will not change until you run this again.")
 
     # A floored band is a defaulted one: the samples showed no measurable spread,
@@ -694,6 +737,14 @@ def build_parser() -> argparse.ArgumentParser:
         "baseline", help="capture a new baseline (explicit, never automatic)", parents=[common]
     )
     p_base.add_argument("--probe", action="append", help="limit to this probe id (repeatable)")
+    p_base.add_argument(
+        "--compare-previous",
+        action="store_true",
+        help=(
+            "show what changed versus the version just replaced (informational "
+            "only -- never affects the exit code)"
+        ),
+    )
     p_base.set_defaults(func=cmd_baseline)
 
     p_check = sub.add_parser(

@@ -612,6 +612,39 @@ sustained shift is not itself an alert-worthy event on the day it is first
 seen, it is a pattern worth a human noticing on a slower cadence. `--json`
 gives the same result structured.
 
+### Informed re-baselining
+
+A DRIFT fires, you decide it is the new normal, and run `stillsane baseline`.
+Ordinarily v1 is kept on disk but never looked at again -- you have just
+accepted a shift without being told its size. Same question after editing a
+prompt: how different is the new version's output from the old one?
+`--compare-previous` answers it, using the exact comparison `check` would:
+
+```bash
+stillsane baseline --compare-previous
+```
+
+```
+  extract_invoice @ prod: v2, 5 sample(s), fingerprint fp_a4f2b1
+    compared to the version it replaced (v1 -> v2, config changed):
+      semantic_distance          0.081  band <=0.02             z=+8.9
+      length_chars                  74  band 62..70             z=+2.1
+
+Captured 1 baseline(s). These will not change until you run this again.
+```
+
+Purely informational: whatever it shows, `baseline` still exits 0 and the new
+version is already written regardless. It is not a preview you can act on
+before committing to the recapture -- v2 exists either way, this is what
+happened, after the fact. `config changed` is shown whenever the version just
+replaced was captured under a different prompt, model, check set or embedder,
+which is the common reason to reach for this flag in the first place (a prompt
+edit) -- said explicitly so a real move reads as "the edit did this" rather
+than as the provider changing underneath an unrelated re-baseline. A probe
+whose previous version never got usable samples (rare) or that has no
+previous version at all (the very first baseline) says so instead of
+comparing against nothing.
+
 ### Config
 
 Plain YAML, meant to live in git and be diffed like code.

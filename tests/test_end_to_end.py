@@ -85,10 +85,12 @@ def env(tmp_path):
     return config, BaselineStore(tmp_path), History(tmp_path)
 
 
-def run_baseline(config, store, texts, fingerprint="fp_a4f2b1"):
+def run_baseline(config, store, texts, fingerprint="fp_a4f2b1", compare_previous=False):
     async def go():
         async with make_client(texts, fingerprint) as client:
-            return await capture_baseline(config, store, client=client)
+            return await capture_baseline(
+                config, store, client=client, compare_previous=compare_previous
+            )
 
     return asyncio.run(go())
 
@@ -174,6 +176,98 @@ def test_baseline_records_the_variance_pool(env):
     baseline = store.load("prod", "extract_invoice")
     assert baseline.pooled["semantic_distance"], "baseline must seed the variance pool"
     assert baseline.anchors["semantic_distance"].scale >= 0
+
+
+# --- Informed re-baselining: --compare-previous -----------------------------
+
+
+def test_compare_previous_is_absent_on_the_first_ever_baseline(env):
+    """Nothing to compare against yet -- must say so via `previous_version`,
+    not silently skip in a way that looks identical to the flag doing
+    nothing."""
+    config, store, _ = env
+    written = run_baseline(config, store, STABLE, compare_previous=True)
+    assert written[0].previous_version is None
+    assert written[0].previous_comparison is None
+
+
+def test_compare_previous_shows_what_changed_between_versions(env):
+    config, store, _ = env
+    run_baseline(config, store, STABLE)
+    written = run_baseline(config, store, DRIFTED, compare_previous=True)
+    captured = written[0]
+
+    assert captured.previous_version == 1
+    assert captured.baseline.version == 2
+    assert captured.previous_comparison is not None
+    assert captured.previous_comparison.moved  # the drifted text really did move
+
+
+def test_compare_previous_is_off_by_default(env):
+    """The common path -- an ordinary `stillsane baseline` -- must do none of
+    this extra work unless explicitly asked."""
+    config, store, _ = env
+    run_baseline(config, store, STABLE)
+    written = run_baseline(config, store, DRIFTED)  # compare_previous defaults False
+    assert written[0].previous_version is None
+    assert written[0].previous_comparison is None
+
+
+def test_compare_previous_flags_a_config_change(env):
+    """The common reason to reach for this flag: a prompt edit. The
+    comparison must say the config moved, not let a real content difference
+    read as the provider changing underneath an unrelated re-baseline.
+    """
+    config, store, _ = env
+    run_baseline(config, store, STABLE)
+
+    edited = Config.model_validate(
+        {**CONFIG, "probes": [{**CONFIG["probes"][0], "prompt": "A completely different ask."}]}
+    )
+    written = run_baseline(edited, store, STABLE, compare_previous=True)
+    assert written[0].config_changed is True
+
+
+def test_compare_previous_does_not_flag_an_unchanged_config(env):
+    config, store, _ = env
+    run_baseline(config, store, STABLE)
+    written = run_baseline(config, store, STABLE, compare_previous=True)
+    assert written[0].config_changed is False
+
+
+def test_compare_previous_never_touches_the_variance_pool(env):
+    """Purely informational -- the comparison must not feed back into the
+    pool or anchors the way an ordinary clean `check` would. Recomputing the
+    same thing every re-baseline, growing sensitivity from a comparison that
+    was never actually a measured check, would be exactly the kind of
+    self-inflicted drift the rest of this engine is built to avoid.
+    """
+    config, store, _ = env
+    run_baseline(config, store, STABLE)
+    before = store.load("prod", "extract_invoice", version=1)
+    run_baseline(config, store, STABLE, compare_previous=True)
+    after = store.load("prod", "extract_invoice", version=1)
+    assert after.pooled == before.pooled
+    assert after.anchors == before.anchors
+
+
+def test_compare_previous_survives_a_previous_version_with_no_usable_samples(env):
+    """Rare (it would have failed to capture at all), but `store.load` can in
+    principle return a baseline whose `usable` is empty -- the comparison
+    must decline gracefully rather than crash on an empty sample list.
+    """
+    config, store, _ = env
+    run_baseline(config, store, STABLE)
+    baseline_v1 = store.load("prod", "extract_invoice", version=1)
+    for s in baseline_v1.samples:
+        s.error = "simulated: no usable samples"
+    # Overwrite v1's samples.jsonl directly -- there is no public API for
+    # writing a broken baseline on purpose, and there should not be one.
+    store._write(store._dir("prod", "extract_invoice") / "v1", baseline_v1)
+
+    written = run_baseline(config, store, STABLE, compare_previous=True)
+    assert written[0].previous_version == 1
+    assert written[0].previous_comparison is None
 
 
 def test_drift_is_caught_end_to_end(env):
@@ -1432,6 +1526,81 @@ def test_bands_flags_a_baseline_the_config_has_moved_past(tmp_path, monkeypatch,
     # A label, not a verdict -- `bands` must not turn a config edit into a
     # false "band will misreport" finding.
     assert "All bands look sound." in out
+
+
+def test_compare_previous_cli_shows_the_diff_and_flags_the_config_change(
+    tmp_path, monkeypatch, capsys
+):
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(CONFIG))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    capsys.readouterr()
+
+    edited = {
+        **CONFIG,
+        "probes": [{**CONFIG["probes"][0], "prompt": "A completely different ask."}],
+    }
+    config_path.write_text(yaml.safe_dump(edited))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(DRIFTED)
+    )
+    code = cli.main(["-c", str(config_path), "baseline", "--compare-previous"])
+    out = capsys.readouterr().out
+
+    # Purely informational: even a wild move between versions must not fail
+    # the build -- `baseline` always exits 0 on a successful capture.
+    assert code == 0
+    assert "v1 -> v2, config changed" in out
+    assert "compared to the version it replaced" in out
+
+
+def test_compare_previous_cli_without_a_config_change(tmp_path, monkeypatch, capsys):
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(CONFIG))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    capsys.readouterr()
+
+    code = cli.main(["-c", str(config_path), "baseline", "--compare-previous"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "v1 -> v2" in out
+    assert "config changed" not in out
+
+
+def test_compare_previous_cli_first_baseline_says_theres_nothing_yet(
+    tmp_path, monkeypatch, capsys
+):
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(CONFIG))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    code = cli.main(["-c", str(config_path), "baseline", "--compare-previous"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "nothing to compare against" in out
+
+
+def test_compare_previous_flag_is_off_prints_nothing_extra(tmp_path, monkeypatch, capsys):
+    """The default invocation must read exactly as it always has -- no new
+    lines for anyone who has never touched this flag."""
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(CONFIG))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    capsys.readouterr()
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    out = capsys.readouterr().out
+    assert "compared to the version it replaced" not in out
+    assert "nothing to compare against" not in out
 
 
 def test_bands_orders_output_the_same_way_check_does(tmp_path, monkeypatch, capsys):
