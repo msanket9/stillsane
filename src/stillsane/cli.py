@@ -195,10 +195,14 @@ def _print_previous_comparison(captured: Captured) -> None:
 
     comparison = captured.previous_comparison
     if comparison is None:
-        # The previous version has no usable samples of its own (rare: it
-        # would have failed to capture in the first place) -- nothing to
-        # compare against even though a version number exists.
-        print(f"    {label}: previous version has no usable samples to compare against")
+        # Two different reasons collapse to the same message here, neither
+        # common: the version directory itself could not be loaded (missing
+        # or corrupt -- `BaselineStore.load` already returns `None` for
+        # that), or it loaded but every one of its samples had errored (it
+        # would have failed to capture in the first place, so this is rare
+        # too). Either way there is nothing on disk to compare against, even
+        # though a version *number* exists.
+        print(f"    {label}: previous version could not be compared (missing or has no usable samples)")
         return
 
     print(f"    compared to the version it replaced ({label}):")

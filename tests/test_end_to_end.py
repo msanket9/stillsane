@@ -270,6 +270,61 @@ def test_compare_previous_survives_a_previous_version_with_no_usable_samples(env
     assert written[0].previous_comparison is None
 
 
+def test_compare_previous_survives_a_missing_version_directory(env):
+    """A genuinely absent or corrupt version -- `BaselineStore.load` returns
+    `None` -- is a different failure from "loaded fine but had no usable
+    samples", and both must decline gracefully rather than crash. Caught
+    while reviewing this feature: the CLI's own message used to claim "no
+    usable samples" even for this case, which is not what happened -- the
+    version could not be read at all.
+    """
+    config, store, _ = env
+    run_baseline(config, store, STABLE)  # v1
+
+    # Simulate a corrupt/incomplete version by hand: a `v2` directory that
+    # exists but has no meta.json, so `latest_version` sees it and the next
+    # capture becomes v3 -- `previous_version` (2) points at a directory
+    # `store.load` cannot actually read.
+    (store._dir("prod", "extract_invoice") / "v2").mkdir()
+
+    written = run_baseline(config, store, STABLE, compare_previous=True)
+    assert written[0].baseline.version == 3
+    assert written[0].previous_version == 2
+    assert written[0].previous_comparison is None
+
+
+def test_compare_previous_cli_says_when_the_previous_version_is_unusable(
+    tmp_path, monkeypatch, capsys
+):
+    config_path = tmp_path / "stillsane.yaml"
+    config_path.write_text(yaml.safe_dump(CONFIG))
+    monkeypatch.setattr(
+        "stillsane.runner.httpx.AsyncClient", lambda *a, **k: make_client(STABLE)
+    )
+    assert cli.main(["-c", str(config_path), "baseline"]) == 0
+    capsys.readouterr()
+
+    store = BaselineStore(tmp_path / ".stillsane")
+    (store._dir("prod", "extract_invoice") / "v2").mkdir()
+
+    code = cli.main(["-c", str(config_path), "baseline", "--compare-previous"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "could not be compared" in out
+    assert "missing or has no usable samples" in out
+
+
+def test_compare_previous_reports_nothing_moved_on_a_truly_stable_probe(env):
+    """The other branch a wording bug could hide in: no signals moved at
+    all, as opposed to some moving -- must say so explicitly rather than
+    printing an empty, ambiguous block."""
+    config, store, _ = env
+    run_baseline(config, store, STABLE)
+    written = run_baseline(config, store, STABLE, compare_previous=True)
+    assert written[0].previous_comparison is not None
+    assert written[0].previous_comparison.moved == []
+
+
 def test_drift_is_caught_end_to_end(env):
     config, store, history = env
     run_baseline(config, store, STABLE)
