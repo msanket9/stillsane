@@ -8,12 +8,20 @@ last month. You find out when a user complains.
 
 stillsane runs a small set of prompts against your live endpoint on a schedule,
 compares each response to a stored baseline, and tells you when behaviour has
-moved outside the range that probe normally varies by. It observes from outside,
-over plain HTTP. There is nothing to instrument, no SDK to import, no account, and
-no hosted service.
+moved outside the range that probe normally varies by. Then it answers the
+questions the alert provokes -- *since when*, *is it a slow slide or a step*,
+*is it my app or the model*, *how big was the change I just accepted*, *did
+the number change or just the wording* -- from files it already wrote, with no
+new sampling and no service.
 
-> **Status: early, v0.0.10.** Everything described below works. The config format
-> may still change before 0.1. See [Status](#status).
+It measures change, not quality. It does not know whether your app is good; it
+knows whether your app is still doing what it did when you last looked. It
+observes from outside, over plain HTTP. There is nothing to instrument, no SDK
+to import, no account, and no hosted service: state is a directory in your repo
+and one SQLite file.
+
+> **Status: early, pre-0.1.** Everything described below works. The config
+> format may still change before 0.1. See [What is here](#what-is-here).
 
 ---
 
@@ -56,7 +64,7 @@ floor. stillsane says which of the two happened rather than presenting a default
 number as a measured one. `stillsane bands` reports it in full.
 
 You can run exactly this in about thirty seconds, with no API key, from
-[`examples/invoice-extract/`](examples/invoice-extract/).
+[`examples/invoice-extract/`](https://github.com/msanket9/stillsane/tree/main/examples/invoice-extract).
 
 ---
 
@@ -80,6 +88,20 @@ stillsane check      # compare against it. Non-zero exit on drift.
 
 Put `stillsane check` on a schedule in CI and you are done. See
 [In CI](#in-ci) for a workflow you can copy.
+
+When it fires, the rest reads from disk and costs nothing:
+
+```bash
+stillsane history    # since when? what did the model actually say?
+```
+
+```bash
+stillsane trend      # is this a slow slide no single run would catch?
+```
+
+```bash
+stillsane bands      # is the band it was judged against a measurement at all?
+```
 
 ---
 
@@ -113,9 +135,8 @@ Probably not, if you already have something:
 
 - **You want to know whether a prompt is good before you ship it.** Use a
   pre-ship eval framework. There are several good open-source ones, and stillsane
-  will not help you. That is not false modesty. Pre-ship evaluation is a different
-  problem, and tools built for it solve it better than a tool of this scope ever
-  will.
+  will not help you. Pre-ship evaluation is a different problem, and tools built
+  for it solve it better than a tool of this scope ever will.
 - **You already run a tracing or eval platform.** You have evaluator scores on
   real production traffic. Watch those. Adding stillsane buys you
   provider-fingerprint watching and not much else.
@@ -136,6 +157,7 @@ If that is you, this is a config file and one command.
 | -------------------------------------- | :-------: | :----------------------: | :---------------: |
 | Answers "will this prompt work?"       |     no    |           yes            |      partly       |
 | Answers "is what I shipped still fine?"|    yes    |            no            |        yes        |
+| Answers "since when, and my app or the model?" | yes |         no            |      partly       |
 | Scores real production traffic         |     no    |            no            |        yes        |
 | Requires instrumenting your app        |     no    |            no            |        yes        |
 | Requires an account / hosted service   |     no    |         usually not      |      usually      |
@@ -161,11 +183,12 @@ and tells you what moved -- that gap is the original reason this exists. The
 diagnosis is what "something moved" becomes once you can also answer *since when*
 (`history`, `status`), *whether it is a real shift or noise accumulating below any
 single run's threshold* (`trend`), *whether it is your app or the provider*
-(`attribute_to`), and *how big the last thing you accepted actually was*
-(`baseline --compare-previous`). Put together: not "something moved" but "this
-moved, since Tuesday, in your app rather than the model, by this much relative to
-what you last accepted" -- the question a reader actually has at 9am after a 6am
-alert, not just the fact that woke them up.
+(`attribute_to`), *whether a specific extracted value changed* (`constant_fields`),
+and *how big the last thing you accepted actually was* (`baseline
+--compare-previous`). Put together: not "something moved" but "this moved, since
+Tuesday, in your app rather than the model, by this much relative to what you last
+accepted" -- the question a reader actually has at 9am after a 6am alert, not just
+the fact that woke them up.
 
 ---
 
@@ -280,9 +303,9 @@ is useful once a config has several: a CI step gating on a newly added probe's
 headroom should not have unrelated probes affecting its exit code. `--strict`
 exits 2 if any signal on any considered probe already fires on a clean run.
 
-The Mann-Whitney p-value reported alongside is
-distribution-free and does carry its usual meaning, which is exactly why it is
-supporting evidence and never the gate.
+The Mann-Whitney p-value reported alongside is distribution-free and does carry
+its usual meaning, which is exactly why it is supporting evidence and never the
+gate.
 
 Related decisions, since they are the ones that determine whether this is usable:
 
@@ -305,8 +328,9 @@ Related decisions, since they are the ones that determine whether this is usable
   against yesterday, so drift arriving a little at a time cannot slowly stretch the
   band around itself.
 - **Editing a prompt invalidates its baseline.** The config hash covers the prompt,
-  system message, checks and model. Change any of them and `check` refuses to
-  compare rather than reporting your own edit as provider drift.
+  system message, scripted turns, target and embedder. Change any of them and
+  `check` refuses to compare rather than reporting your own edit as provider
+  drift.
 - **A transport error is not drift.** A dead endpoint exits with a different code
   than a quality regression, because they call for different responses.
 - **Transport failures retry; verdicts never do.** A timeout or a dropped
@@ -320,17 +344,28 @@ Related decisions, since they are the ones that determine whether this is usable
 
 ---
 
-## Usage
+## Commands
 
-Python 3.10+, five dependencies, no torch. Everything needed to run is installed;
-the embedding model itself is fetched once on first use (~32MB) and cached. See
+Python 3.10+, five direct dependencies, no torch. The embedding model is fetched
+once on first use (~32MB) and cached. See
 [Design constraints](#design-constraints) if you need to stay fully offline.
 
-Beyond the three commands in the [quickstart](#quickstart) there is `stillsane
-watch`, a sleep loop that is honest about being one. cron or CI does this better:
-they survive reboots, they log, and they can tell you when the job itself stopped
-running, which a bare process cannot do for itself. There is also `stillsane
-bands`, below.
+| Command | Reads | Costs | Answers |
+| --- | --- | --- | --- |
+| `stillsane init` | your logs, optionally | nothing | a starter config, or one generated from real prompts |
+| `stillsane baseline` | the endpoint | N samples per probe, once | what "normal" looks like; with `--compare-previous`, how far it moved from the last version |
+| `stillsane check` | the endpoint | M samples per probe, per run | did anything move; exit code for CI |
+| `stillsane bands` | `.stillsane/baselines/` | nothing | is each band a measurement, and how often would it cry wolf |
+| `stillsane status` | `.stillsane/history.sqlite` | nothing | is the canary itself alive and measuring |
+| `stillsane history` | history + `.stillsane/runs/` | nothing | since when; what the model actually said in a given run |
+| `stillsane calibrate` | history | nothing | how close clean runs came to the thresholds |
+| `stillsane trend` | history + baselines | nothing | a shift too small to cross the threshold on any single run |
+| `stillsane watch` | the endpoint | M samples per interval | a sleep loop, for laptops and trials only |
+
+Every command takes `-c/--config` (default `stillsane.yaml`), and every reporting
+command takes `--json` for the same result structured. The three questions an
+alert provokes are below; `check` and `baseline` are covered under
+[Config](#config).
 
 ### Is the canary alive?
 
@@ -386,8 +421,7 @@ run(s)" after a month of daily runs is the tell that the cache, not the canary,
 is what broke.
 
 `--strict` exits 2 when the canary is unhealthy or overdue, for a second cron job
-whose only purpose is to notice that the first one stopped. `--json` gives the
-same verdict structured.
+whose only purpose is to notice that the first one stopped.
 
 ### Since when?
 
@@ -422,13 +456,15 @@ semantic_distance  summarise_incident @ claude   (most recent first)
 ```
 
 `--signals` lists everything that has been recorded, so you do not have to
-remember signal names to look at your own data. Everything lives in
-`.stillsane/history.sqlite`.
+remember signal names to look at your own data. The alert itself carries the
+answer too: each probe in the JSON payload has `first_seen` and
+`consecutive_runs`, and the Slack headline says `(day 4)` once a streak is more
+than a passing mention. See [Alerts](#alerts).
 
 **What did the model actually say?** `history` has numbers, not text --
 investigating an alert from a few hours ago used to mean finding whatever log
 captured that run's stdout, which for a scheduled job usually means digging
-through CI. Every `check` run now keeps its own current-run samples under
+through CI. Every `check` run keeps its own current-run samples under
 `.stillsane/runs/<run_id>/`, using the same run id `history` lists above:
 
 ```bash
@@ -443,11 +479,12 @@ extract_invoice @ prod
 ```
 
 Only the last 50 runs are kept, oldest pruned first, so a `watch` loop cannot
-grow this without bound. The full decoded response body is not part of it
-either, for the same reason as `store_raw` above -- these files are not meant
-to be committed, but they are still local disk, and a `type: http` target
-against your own app can carry tenant data in a response the same way a
-baseline can.
+grow this without bound. These files hold what your endpoint said, which for a
+`type: http` target against your own app can include tenant data; they are local
+state, not something to commit. Only `.stillsane/baselines/` is meant for git --
+`.stillsane/runs/` and `.stillsane/history.sqlite` are not currently gitignored
+by default, so add them to your own `.gitignore` if you follow the README's
+advice to commit `.stillsane/baselines/`.
 
 ### Inspecting the bands
 
@@ -525,10 +562,9 @@ so it adds no new leap, but a small baseline estimates it coarsely.
 
 It also names a baseline `check` is about to refuse. `bands` recomputes every band
 from stored numbers regardless of whether the config that produced them still
-matches -- there is nothing wrong with the arithmetic either way -- but a clean
-"all bands look sound" on a baseline whose config hash has since moved reads as
-"this is fine" when it is actually "recapture before this tells you anything
-about what `check` will do":
+matches, but a clean "all bands look sound" on a baseline whose config hash has
+since moved reads as "this is fine" when it is actually "recapture before this
+tells you anything about what `check` will do":
 
 ```
 extract_invoice @ prod   (v1, 5 sample(s), captured 2026-08-04)
@@ -540,27 +576,8 @@ code on its own, even under `--strict`.
 
 `--strict` exits 2 when any band will misreport, for a CI job that should fail on
 a baseline this shape. `-v` shows every band rather than only the interesting ones.
-
-`--json` writes the same inspection as structured output. Unlike the human report
-it always includes every band, sound ones included, since a consumer diffing bands
-between runs needs to tell "still sound" from "no longer reported":
-
-```json
-{
-  "signal": "semantic_distance",
-  "finding": "collapsed",
-  "suspect": true,
-  "unit": "pairs",
-  "n": 31,
-  "observed_min": 0.0,
-  "observed_max": 0.1276024580001831,
-  "raw_scale": 0.0,
-  "outside": 14,
-  "outside_pct": 45.16,
-  "band": {"center": 0.0, "scale": 0.006666666666666667,
-           "lower": null, "upper": 0.02, "n": 31, "floored": true}
-}
-```
+`--json` always includes every band, sound ones included, since a consumer diffing
+bands between runs needs to tell "still sound" from "no longer reported".
 
 ### A shift too small to ever cross the threshold on its own
 
@@ -594,31 +611,24 @@ recapturing resets the comparison, since it is scoped to the baseline version
 currently on disk.
 ```
 
-It costs nothing: no network, no API key, no new sampling. Per probe/signal, it
-takes the median of the earliest runs recorded against the *current* baseline
-version and the median of the most recent ones (`--window`, default 5 runs per
-side), and expresses both against the same, fixed band `bands` would show today.
-"Fixed" is deliberate -- a signal's band tightens over time as clean runs pool
-into it, so trending the `z` each run recorded *at the time* would be comparing
-numbers measured on different scales and calling the difference a shift. A
-sustained shift is reported when the early group sat inside `warn_k * grey_zone`
-(the same "elevated but not WARN-worthy" fraction the corroboration check
-already uses) and the recent group has moved past it -- not the full `warn_k`
-band itself, since a move that never crosses `warn_k` on a single run will not
-cross it as a multi-run median either, and that move is exactly what this
-command exists to surface before it accumulates into something that does.
+Per probe/signal, it takes the median of the earliest runs recorded against the
+*current* baseline version and the median of the most recent ones (`--window`,
+default 5 runs per side), and expresses both against the same, fixed band `bands`
+would show today. "Fixed" is deliberate -- a signal's band tightens over time as
+clean runs pool into it, so trending the `z` each run recorded *at the time* would
+be comparing numbers measured on different scales and calling the difference a
+shift. A sustained shift is reported when the early group sat inside `warn_k *
+grey_zone` (the same "elevated but not WARN-worthy" fraction the corroboration
+check already uses) and the recent group has moved past it.
 
-Scoped to the baseline version on disk: a sustained shift is exactly what
-`stillsane baseline` should absorb, so runs recorded against a since-replaced
-baseline are never averaged in with current ones -- otherwise the first runs
-after a recapture would read as a shift that is really just the old baseline's
-tail.
+Scoped to the baseline version on disk: runs recorded against a since-replaced
+baseline are never averaged in with current ones -- otherwise the first runs after
+a recapture would read as a shift that is really just the old baseline's tail.
 
-`--probe` scopes to one probe. `--strict` exits 2 if any signal shows a
-sustained shift, for a weekly job distinct from the daily `check` -- a
-sustained shift is not itself an alert-worthy event on the day it is first
-seen, it is a pattern worth a human noticing on a slower cadence. `--json`
-gives the same result structured.
+`--strict` exits 2 if any signal shows a sustained shift, for a weekly job distinct
+from the daily `check` -- a sustained shift is not itself an alert-worthy event on
+the day it is first seen, it is a pattern worth a human noticing on a slower
+cadence.
 
 ### Informed re-baselining
 
@@ -642,18 +652,24 @@ Captured 1 baseline(s). These will not change until you run this again.
 ```
 
 Purely informational: whatever it shows, `baseline` still exits 0 and the new
-version is already written regardless. It is not a preview you can act on
-before committing to the recapture -- v2 exists either way, this is what
-happened, after the fact. `config changed` is shown whenever the version just
-replaced was captured under a different prompt, model, check set or embedder,
-which is the common reason to reach for this flag in the first place (a prompt
-edit) -- said explicitly so a real move reads as "the edit did this" rather
-than as the provider changing underneath an unrelated re-baseline. A probe
-whose previous version never got usable samples (rare) or that has no
-previous version at all (the very first baseline) says so instead of
-comparing against nothing.
+version is already written regardless. It is not a preview you can act on before
+committing to the recapture -- v2 exists either way, this is what happened, after
+the fact. `config changed` is shown whenever the version just replaced was
+captured under a different prompt, model or embedder, which is the common reason
+to reach for this flag in the first place (a prompt edit) -- said explicitly so a
+real move reads as "the edit did this" rather than as the provider changing
+underneath an unrelated re-baseline.
 
-### Config
+### watch
+
+`stillsane watch --interval 3600` is a sleep loop, and honestly so. cron or CI
+does this better: they survive reboots, they log, and they can tell you when the
+job itself stopped running, which a bare process cannot do for itself. `--once`
+runs a single iteration, which is a convenient way to try a config.
+
+---
+
+## Config
 
 Plain YAML, meant to live in git and be diffed like code.
 
@@ -667,6 +683,9 @@ targets:
     watch_fingerprint: true
     timeout_s: 60                   # per request
     retries: 1                      # transport failures only, never a verdict
+    retry_backoff_s: 2              # doubles per attempt
+    temperature: 0                  # optional; sent as-is to the provider
+    max_tokens: 400                 # optional
 
 probes:
   - id: extract_invoice
@@ -682,10 +701,15 @@ alerts:
   webhook: https://hooks.example.com/...
 ```
 
-**Monitoring your own app rather than a model API.** This is the case the tool is
-really for: most people are not watching a raw model, they are watching the thing
-they shipped, which has its own retrieval, prompt assembly and bugs in front of it.
-Use `type: http` and describe the request:
+`samples: 5` also works and sets the baseline count. A probe runs against every
+target unless it names some with its own `targets:` list.
+
+### Your own app rather than a model API
+
+This is the case the tool is really for: most people are not watching a raw
+model, they are watching the thing they shipped, which has its own retrieval,
+prompt assembly and bugs in front of it. Use `type: http` and describe the
+request:
 
 ```yaml
 targets:
@@ -697,9 +721,16 @@ targets:
     headers:
       x-tenant: acme
     body:
-      document: "{{prompt}}"           # {{prompt}} and {{system}} are substituted
+      document: "{{prompt}}"           # {{prompt}}, {{system}} and {{turns}} are substituted
     response_path: data.reply          # where the text lives in the response
 ```
+
+`response_path` takes dotted paths with indexes (`choices.0.message.content`) and
+a filter form (`content[type=text].text`). The filter matters on Anthropic: with
+thinking enabled `content.0` is the thinking block, not the answer. Editing
+`response_path`, `method`, `path`, `body` or `headers` invalidates the baseline,
+because any of them can change which backend answers or which part of the answer
+is compared.
 
 **Is it my app or the model?** A `type: http` probe against `prod` above fires.
 Which of the three causes was it -- the provider, a prompt edit, or retrieval? On
@@ -747,16 +778,16 @@ already costs, and needs both to have actually run in the same check -- a
 control missing a baseline, or simply not scoped to this probe, leaves the line
 off rather than guessing. It is never proof either way, only ever "the model's
 behaviour on this exact text did or did not move", which the line always says in
-full rather than leaving implied -- the app wraps the same text in its own system
-prompt and retrieval, so a quiet control is not a clean bill of health for the
-app's own model. Fingerprints are deliberately excluded from "did the control
-move": they vary by account and region even against an unchanged model, so a
-fingerprint-only blip on the control would make attribution noisier than the
-thing it is meant to corroborate.
+full rather than leaving implied. Fingerprints are deliberately excluded from
+"did the control move": they vary by account and region even against an
+unchanged model, so a fingerprint-only blip on the control would make attribution
+noisier than the thing it is meant to corroborate. A probe that errored gets no
+attribution line at all: nothing was measured to attribute.
 
-**Providers that do not use `Authorization: Bearer`.** Anthropic wants
-`x-api-key` with no prefix, Azure wants `api-key`. Both are reachable without
-putting a live secret in `headers`:
+### Providers that do not use `Authorization: Bearer`
+
+Anthropic wants `x-api-key` with no prefix, Azure wants `api-key`. Both are
+reachable without putting a live secret in `headers`:
 
 ```yaml
 targets:
@@ -778,15 +809,12 @@ targets:
     response_path: content[type=text].text
 ```
 
-`response_path` takes dotted paths with indexes (`choices.0.message.content`) and
-a filter form (`content[type=text].text`). The filter matters on Anthropic: with
-thinking enabled `content.0` is the thinking block, not the answer.
+### Running probes through a Claude Pro or Max subscription
 
-**Running probes through a Claude Pro or Max subscription instead of a metered
-API key.** If you already pay for Claude Code, a drift canary should not need a
-second, separately billed key just to sample a probe. `type: claude_code` shells
-out to the `claude` CLI already installed and authenticated on this machine, so a
-probe draws on whatever that login already covers:
+If you already pay for Claude Code, a drift canary should not need a second,
+separately billed key just to sample a probe. `type: claude_code` shells out to
+the `claude` CLI already installed and authenticated on this machine, so a probe
+draws on whatever that login already covers:
 
 ```yaml
 targets:
@@ -862,26 +890,25 @@ less real-world testing than the default and no MCP server is ever reachable
 either way, regardless of what is configured on the machine running the check.
 
 `claude_command` overrides the binary invoked, if `claude` on `PATH` is not the
-right one to use.
+right one to use. `temperature` and `max_tokens` are accepted in config but have
+no effect on this target -- the `claude` CLI's `-p` mode has no flag for either.
+`turns` (below) is not supported on it, for the same reason.
 
-Also on a target: `timeout_s`, `retries`, `retry_backoff_s`, and
-`escalate_fingerprint` to make a changed fingerprint fail rather than warn.
+### On every target
+
+`timeout_s`, `retries` and `retry_backoff_s` as shown above. `escalate_fingerprint`
+makes a changed fingerprint fail rather than warn; `watch_fingerprint: false`
+drops the signal for a provider whose fingerprint churns on its own.
 
 `store_raw: true` persists each sample's full decoded response body into
-`samples.jsonl` at baseline capture time. Off by default: nothing in stillsane
-reads it, and `.stillsane/baselines/` is meant to be committed to git (see
-below), which for `type: http` against your own app means whatever your API
-actually returned -- tenant data included -- landing in version-control
-history that is not easily purged after the fact. Turn it on per target only
-once you have an actual reader for it and have checked what that target's
-responses contain.
-
-`temperature` and `max_tokens` are accepted in config but have no effect here --
-the `claude` CLI's `-p` mode has no flag for either, unlike the other target
-types, which do support both. Verified against `claude --help` directly rather
-than assumed.
-
-`samples: 5` also works and sets the baseline count.
+`samples.jsonl` at baseline capture time and into `.stillsane/runs/`. Off by
+default: nothing in stillsane reads it, and `.stillsane/baselines/` is meant to
+be committed to git, which for `type: http` against your own app means whatever
+your API actually returned -- tenant data included -- landing in version-control
+history that is not easily purged after the fact. Note that the *extracted text*
+is always stored; `store_raw` only controls the envelope around it. Turn it on
+per target only once you have an actual reader for it and have checked what that
+target's responses contain.
 
 **On cost.** Sampling is the whole mechanism, so it is worth being explicit: the
 expensive part is the baseline, and you pay it once. Routine checks need only
@@ -930,8 +957,7 @@ same as editing `prompt`.
 
 For `type: http`, `{{turns}}` is `turns` alone -- the scripted history, not
 including the live turn -- so it belongs alongside an explicit final message
-built from `{{prompt}}`, the same way every other `messages` array in this
-README is written out by hand:
+built from `{{prompt}}`:
 
 ```yaml
 body:
@@ -942,12 +968,13 @@ body:
 ```
 
 As a list element, `"{{turns}}"` splices the real list of `{role, content}`
-objects into `messages` in place, rather than nesting one array inside another
--- so the result is a single flat array: scripted history, then the live
-turn, exactly what OpenAI's and Anthropic's `messages` arrays expect. Used as
-an entire field's value on its own (`messages: "{{turns}}"`), it substitutes
-just the scripted history with nothing live in it at all, which is rarely
-what you want -- the form above is the one to reach for.
+objects into `messages` in place, so the result is a single flat array:
+scripted history, then the live turn, exactly what OpenAI's and Anthropic's
+`messages` arrays expect. Used as an entire field's value on its own
+(`messages: "{{turns}}"`), it substitutes just the scripted history with nothing
+live in it at all, which is rarely what you want. Placeholders are substituted
+in one pass: a prompt that itself contains the text `{{system}}` is sent with
+that text intact.
 
 Not supported on `type: claude_code`: the `claude` CLI's `-p` mode has no flag
 to inject prior assistant turns, so a probe using `turns` must be scoped away
@@ -959,15 +986,19 @@ from any `claude_code` target with the probe's own `targets:` field.
 | --- | --- |
 | `valid_json` | The whole response parses as JSON. A markdown fence is allowed; surrounding prose is not, because that is what breaks a caller's `json.loads`. |
 | `has_keys: [a, b]` | Those keys are present in the JSON, found leniently. Deliberately separate from `valid_json`, so the report can say the data survived even when the envelope broke. |
-| `semantic_similarity: auto` | Learn the band. A number instead of `auto` pins a fixed threshold. |
-| `max_length: 2000` | Hard cap on response length. |
 | `constant_fields: [total, due_date]` | Those fields' *values*, found leniently, must stay whatever the baseline learned them to be. |
+| `semantic_similarity: auto` | Learn the band. The default. |
+| `semantic_similarity: 0.9` | A fixed floor on cosine *similarity* (1 = identical): distance above `0.1` is drift. `semantic_distance: 0.1` is the same rule written as a distance. The report names which spelling set the band. |
+| `max_length: 2000` | Hard cap on response length, as a second signal alongside the learned `length_chars` band. |
 
 Several signals are always on and need no configuration: semantic distance, JSON
 shape, tool-call shape, length, completion tokens, cost, latency, provider
 fingerprint, model id, and whether the response finished on its own rather than
 getting cut off by the token limit. Signals that do not apply to a probe stay
-silent, so tool-call drift says nothing about a probe that never calls a tool.
+silent, so tool-call drift says nothing about a probe that never calls a tool. A
+signal that did not apply at baseline and does now -- an agent that started
+calling a tool, a probe that started returning JSON -- is reported as a change,
+not skipped.
 
 The truncation one exists because of a real miss: an essay probe run for weeks
 against a live provider truncated on 7 of 8 samples (`stop_reason=max_tokens`) and
@@ -1028,47 +1059,54 @@ to do so on baseline capture. Naming the fields worth watching is the point --
 `total` and `due_date` matter for an invoice extractor; a `notes` field probably
 does not.
 
-### Generating probes from logs
+### Thresholds
 
-Writing twenty probes by hand is the reason most people never start, and the ones
-you would write are the ones you already think about. The prompts actually hitting
-your endpoint are a better sample, and you already have them:
-
-```bash
-stillsane init --from-logs requests.jsonl
+```yaml
+thresholds:
+  warn_k: 3          # WARN when |z| exceeds this
+  drift_k: 6         # DRIFT when |z| exceeds this
+  min_confident_n: 4 # below this many baseline samples, DRIFT is capped to WARN
 ```
 
+The defaults are the ones every number in this README was measured against.
+`calibrate` is how you find out whether they are right for your probes; change
+them only on that evidence.
+
+### Alerts
+
+```yaml
+alerts:
+  webhook: https://hooks.example.com/...
+  slack_webhook: https://hooks.slack.com/services/...
+  fail_on_warn: false   # WARN never fails a build unless this is true
 ```
-Read requests.jsonl
-  61 distinct prompt(s), clustered into 3
-```
 
-That number is the point. Real logs are enormously repetitive: a thousand requests
-are usually a handful of shapes with different payloads stuffed into them. Near
-duplicates are clustered by meaning using the embedder that already ships for
-drift detection, and the most frequent variant of each cluster becomes the probe,
-annotated with how often it appeared.
+Fired on every non-PASS run, to `webhook` (the same JSON `--json` prints),
+`slack_webhook` (a short headline plus the plain-text report), or both. Delivery
+is best-effort: a webhook that is down is reported on stderr and never turns a
+successful check into a failed one. Both payloads contain the before/after
+excerpts -- up to 400 characters of what your endpoint said -- so pick a
+destination accordingly.
 
-Reads JSONL, a JSON array, or a directory of `.json` files. Each record can be an
-OpenAI-style request body, a bare `{"prompt": ...}`, or either of those wrapped
-under `request`, `body` or `payload`. Malformed lines are skipped, because
-refusing a 10,000-line log over one line truncated mid-write would make the
-feature useless on exactly the files it exists for.
+**"Since when?"** is the first question any alert provokes, and the alert answers
+it rather than sending the reader to `history`. Each probe in the JSON payload
+carries `first_seen` (when its current run of non-PASS verdicts began) and
+`consecutive_runs` (how many in a row, this one included, with no clean run in
+between) -- a recovery resets both, so a probe that broke again after passing
+reads as day one of a new incident, not a continuation of the old one. The Slack
+headline picks up the longest-running of the probes that moved once it is more
+than a passing mention: `DRIFT (day 4) (1/3 probes moved)`.
 
-Anthropic's Messages API is read too: its `system` sits as a top-level string (or
-the multipart content-block form used for prompt caching) alongside `messages`
-rather than as a `role: system` entry inside it, and every form is checked.
-
-**Checks are emitted commented out.** Guessing that a probe returns JSON and being
-wrong would fail your first baseline and teach you the tool is broken. You get the
-prompts and a suggestion; you decide what holds.
-
-| Flag | |
-| --- | --- |
-| `--limit N` | Most probes to emit, most frequent first. Default 20. |
-| `--merge-distance D` | How aggressively to cluster. Higher merges more. Default 0.12. |
-| `--probes-only` | Emit just the `probes:` block, for pasting into a config you already have. |
-| `--embedder hashing` | Cluster without the embedding model, fully offline. |
+**`alerts.repeat_every`** suppresses resending an *unchanged* verdict. Unset (the
+default) sends every non-PASS run, which is the safe choice -- a monitor that can
+go quiet on its own judgement is one step from the exact "silence looks like
+success" failure this tool exists to prevent. `repeat_every: 0` sends only when a
+probe's verdict first changes and suppresses every later repeat of the same
+streak; a positive number instead resends every that-many runs, so a long-running
+issue is not forgotten entirely. A verdict that just changed always alerts
+regardless of this setting. When a run is suppressed, `check` still prints why on
+stderr and the verdict and exit code are completely unaffected -- only the
+notification is skipped.
 
 ### The judge (optional)
 
@@ -1099,8 +1137,10 @@ Two deliberate limits:
 
 - **It is advisory.** By default it explains and nothing else. The verdict came
   from a band learned out of the probe's own measured behaviour, and a model that
-  saw two samples does not get to overrule that. Set `can_downgrade: true` to let
-  it soften a drift it considers purely cosmetic, once you trust it.
+  saw two samples does not get to overrule that. The judge also reads your
+  endpoint's output verbatim, so a compromised or adversarially prompted upstream
+  can talk to it directly. Set `can_downgrade: true` to let it soften a drift it
+  considers purely cosmetic, once you trust both.
 - **It gets its own endpoint.** Not a flag on a target, because judging with the
   same deployment you are watching means a provider-side change moves both the
   thing being measured and the instrument measuring it.
@@ -1108,81 +1148,100 @@ Two deliberate limits:
 If the judge is unreachable or answers with something unparseable, the run is
 unaffected: the verdict stands and the explanation is simply absent.
 
-### Alerts
+### Generating probes from logs
 
-```yaml
-alerts:
-  webhook: https://hooks.example.com/...
-  slack_webhook: https://hooks.slack.com/services/...
-  fail_on_warn: false   # WARN never fails a build unless this is true
+Writing twenty probes by hand is the reason most people never start, and the ones
+you would write are the ones you already think about. The prompts actually hitting
+your endpoint are a better sample, and you already have them:
+
+```bash
+stillsane init --from-logs requests.jsonl
 ```
 
-Fired on every non-PASS run, to `webhook` (the same JSON `--json` prints), `slack_webhook`
-(a short headline plus the plain-text report), or both. Delivery is best-effort: a
-webhook that is down is reported on stderr and never turns a successful check into
-a failed one.
+```
+Read requests.jsonl
+  61 distinct prompt(s), clustered into 3
+```
 
-**"Since when?"** is the first question any alert provokes, and the alert answers
-it rather than sending the reader to `history`. Each probe in the JSON payload
-carries `first_seen` (when its current run of non-PASS verdicts began) and
-`consecutive_runs` (how many in a row, this one included, with no clean run in
-between) -- a recovery resets both, so a probe that broke again after passing
-reads as day one of a new incident, not a continuation of the old one. The Slack
-headline picks up the longest-running of the probes that moved once it is more
-than a passing mention: `DRIFT (day 4) (1/3 probes moved)`.
+That number is the point. Real logs are enormously repetitive: a thousand requests
+are usually a handful of shapes with different payloads stuffed into them. Near
+duplicates are clustered by meaning using the embedder that already ships for
+drift detection, and the most frequent variant of each cluster becomes the probe,
+annotated with how often it appeared.
 
-**`alerts.repeat_every`** suppresses resending an *unchanged* verdict. Unset (the
-default) sends every non-PASS run, which is the safe choice -- a monitor that can
-go quiet on its own judgement is one step from the exact "silence looks like
-success" failure this tool exists to prevent. `repeat_every: 0` sends only when a
-probe's verdict first changes and suppresses every later repeat of the same
-streak; a positive number instead resends every that-many runs, so a long-running
-issue is not forgotten entirely. A verdict that just changed always alerts
-regardless of this setting -- suppression is about not repeating news the reader
-already has, never about missing news that is new. When a run is suppressed,
-`check` still prints why on stderr (`alert suppressed (alerts.repeat_every=0,
-unchanged since last sent): ...`) and the verdict and exit code are completely
-unaffected -- only the notification is skipped.
+Reads JSONL, a JSON array, or a directory of `.json` files. Each record can be an
+OpenAI-style request body, an Anthropic-style one (top-level `system`, plain or
+multipart), a bare `{"prompt": ...}`, or any of those wrapped under `request`,
+`body` or `payload`. Malformed lines are skipped, because refusing a 10,000-line
+log over one line truncated mid-write would make the feature useless on exactly
+the files it exists for.
 
-### Exit codes
+**Checks are emitted commented out.** Guessing that a probe returns JSON and being
+wrong would fail your first baseline and teach you the tool is broken. You get the
+prompts and a suggestion; you decide what holds.
+
+| Flag | |
+| --- | --- |
+| `--limit N` | Most probes to emit, most frequent first. Default 20. |
+| `--merge-distance D` | How aggressively to cluster. Higher merges more. Default 0.12. |
+| `--probes-only` | Emit just the `probes:` block, for pasting into a config you already have. |
+| `--embedder hashing` | Cluster without the embedding model, fully offline. |
+
+### From Python
+
+Everything the CLI does goes through `stillsane.runner.check` and
+`stillsane.runner.capture_baseline`, which take a `Config`, a `BaselineStore`
+and an optional `httpx.AsyncClient` and return dataclasses -- that is how the
+entire test suite runs with no network. They are usable from a pytest today. They
+are not yet a stable API: the signatures may move before 0.1, after which they
+will not.
+
+---
+
+## Exit codes
 
 | Code | Meaning |
 | :--: | --- |
 | `0` | No drift. |
 | `1` | Drift. |
 | `2` | Warning only. Does not fail a build unless `fail_on_warn: true`. |
-| `3` | Error. The endpoint failed, or there is no usable baseline. |
+| `3` | Error. The endpoint failed, the config is invalid, or there is no usable baseline. Nothing was measured. |
 
-### In CI
+---
+
+## In CI
 
 Copy
-[`examples/invoice-extract/github-actions.yml`](examples/invoice-extract/github-actions.yml)
+[`examples/invoice-extract/github-actions.yml`](https://github.com/msanket9/stillsane/blob/main/examples/invoice-extract/github-actions.yml)
 into `.github/workflows/`. It runs `stillsane check` every morning, caches the
 embedding model and the drift history between runs, and fails the job on drift.
 
 Kept as one file rather than pasted here as a second copy, because two copies of a
 workflow drift apart and the one in the README is the one nobody re-tests.
 
-Two things it relies on:
+Three things it relies on:
 
 - **Commit `.stillsane/baselines/`.** The workflow needs something to compare
-  against. They are plain text and diff like code. `.stillsane/history.sqlite`
-  is a binary that changes every run, so it does not belong in git either --
-  but every checkout in CI starts fresh, and without *some* history `status`,
-  `history`, `calibrate` and `trend` all have nothing to read, which is not
-  cosmetic: the README's own "since when?" promise does not hold for anyone
-  following these instructions. The workflow instead caches
-  `.stillsane/history.sqlite` with `actions/cache`, keyed per run with a
-  `restore-keys` prefix so each run restores the most recent copy and saves
-  its own back at the end. This is best-effort, not durable -- a cache
-  eviction resets it silently, with no run ever failing -- which is exactly
-  why `stillsane status` prints "history since <date>, N runs" from the
-  database's true, unbounded age: watch that line for a reset, not just the
-  exit code. Full response bodies are not part of any of this by default
-  (`store_raw`, above) -- only the extracted text and metadata a check
-  actually compares against.
+  against. They are plain text and diff like code. stillsane writes a
+  `.gitignore` inside `.stillsane/` that keeps `history.sqlite`, `runs/` and the
+  grown variance pool out of git -- those change on every run and are local
+  state, not reference outputs.
+- **History lives in a cache, and the workflow saves it even when `check` fails.**
+  Every checkout starts fresh, and without *some* history `status`, `history`,
+  `calibrate` and `trend` have nothing to read. The workflow restores
+  `.stillsane/history.sqlite` with `actions/cache/restore` and saves it with
+  `actions/cache/save` under `if: always()` -- the split matters, because a
+  DRIFT exits 1, a failed step fails the job, and the plain `actions/cache`
+  action does not save on a failed job. Without the split, exactly the runs you
+  most want in history -- the ones that fired -- are the ones that vanish, and
+  every alert reads as day one. This is still best-effort, not durable: a cache
+  eviction resets it silently, with no run ever failing, which is why
+  `stillsane status` prints "history since <date>, N runs" from the database's
+  true, unbounded age. Watch that line, not just the exit code.
 - **A daily schedule is the point.** Provider-side model changes arrive without
-  warning; finding out within a day is the entire product.
+  warning; finding out within a day is the entire product. Pin the package
+  version in the workflow; the config format is not frozen yet, and a scheduled
+  job that upgrades itself is how a config breaks at 6am.
 
 **Gating a PR that edits a probe.** A prompt edit changes the config hash, so an
 ordinary `check` refuses to compare against the old baseline -- correctly, since
@@ -1203,22 +1262,26 @@ edit visible, it does not validate it.
 
 ---
 
-## Status
+## What is here
 
-Release notes are in [CHANGELOG.md](CHANGELOG.md).
+Release notes are in [CHANGELOG.md](https://github.com/msanket9/stillsane/blob/main/CHANGELOG.md).
 
 Working end to end:
 
-- The comparison engine: variance bands, effect sizes, verdict aggregation
-- Signals: structural, semantic, JSON shape, tool-call shape, fingerprint,
+- The comparison engine: variance bands, effect sizes, verdict aggregation,
+  variance pooling with the caps that stop gradual drift widening its own band
+- Signals: structural (`valid_json`, `has_keys`, `constant_fields`,
+  `max_length`), semantic, JSON shape, tool-call shape, fingerprint, model id,
   tokens, cost, latency, response truncation
-- Variance pooling, with the caps that stop gradual drift widening its own band
-- Targets: OpenAI-compatible and arbitrary HTTP
-- Versioned baseline store, SQLite history, and the config hash that refuses a
-  stale comparison
-- `init`, `baseline`, `check`, `watch`, the report renderer, and webhook/Slack alerts
-- The optional LLM judge, which only runs on probes that already failed their band
-- `init --from-logs`, which clusters your logged prompts into a probe set
+- Targets: OpenAI-compatible, arbitrary HTTP (with `{{turns}}` for multi-turn
+  probes), and the local `claude` CLI
+- Versioned baseline store, SQLite history, per-run sample store, and the config
+  hash that refuses a stale comparison
+- `init` (with `--from-logs`), `baseline` (with `--compare-previous`), `check`
+  (with `--against-stale`), `bands`, `status`, `history`, `calibrate`, `trend`,
+  `watch`
+- Webhook/Slack alerts with streak tracking and `repeat_every`; `attribute_to`
+  control targets; the optional LLM judge
 
 The test suite runs with no network, no API key and no model download. It ships
 in the sdist, so you can verify the variance model yourself rather than taking
@@ -1229,12 +1292,11 @@ pip install -e ".[dev]" && pytest
 ```
 
 There is a runnable worked example in
-[`examples/invoice-extract/`](examples/invoice-extract/), with a committed baseline
+[`examples/invoice-extract/`](https://github.com/msanket9/stillsane/tree/main/examples/invoice-extract), with a committed baseline
 and a mock provider, so you can watch a real regression get caught without an API
 key. CI builds the wheel, installs it into an empty environment and runs that
 example on every push, which is how a broken install gets caught before a release
 rather than after one.
-
 
 **Expect breakage before 0.1.** The config format is not frozen. If a field is
 renamed you will get a validation error naming it, not a silent misread, but a
@@ -1242,23 +1304,32 @@ version pin is wise for now.
 
 ---
 
-## Non-goals
+## Scope
 
-Each of these turns a finishable project into an unfinished platform, so they are
-out permanently rather than deferred:
+stillsane detects that a deployed endpoint's behaviour changed, and helps you
+work out since when, where and how much. That is the whole job, and the
+following are out of it on purpose, because each one turns a finishable tool into
+an unfinished platform:
 
-no web dashboard · no hosted service, accounts or billing · no tracing or
-instrumentation of your app · no SDK to import · no database beyond SQLite · no
-agent-framework integrations, it speaks plain HTTP · no leaderboards or model
-benchmarking
-
-And the one that matters most: **stillsane is not an eval framework.** It does not
-measure whether your app is good. It measures whether it *changed* from a known
-baseline. Existing tools measure quality; this measures change.
+- **It measures change, not quality.** Nothing in it says whether an output is
+  good. `has_keys` and `constant_fields` compare against what the *baseline*
+  produced, never against an answer you typed in; the judge is asked "did this
+  change" and never "is this right". Tools that measure quality exist and are
+  better at it; use one before you ship.
+- **It observes from outside.** No tracing, no instrumentation, no SDK wrapped
+  around your calls. `attribute_to` is the outside-in answer to "my app or the
+  model"; it is deliberately weaker than tracing and deliberately free.
+- **State is files in your repo and one SQLite file.** No hosted service, no
+  accounts, no billing, no other database. Every command has `--json`; anyone
+  who wants a dashboard has the data.
+- **It speaks plain HTTP** (and, as the one exception that paid for itself, the
+  local `claude` CLI). No agent-framework integrations: anything that exposes an
+  endpoint is already covered by `type: http`.
+- **No leaderboards or model benchmarking.**
 
 **Possible, not planned: shared baselines.** A baseline is already plain text
-keyed by a config hash covering prompt, model, checks and embedder, which makes it
-portable in principle. A public repository of baselines for public providers
+keyed by a config hash covering prompt, model and embedder revision, which makes
+it portable in principle. A public repository of baselines for public providers
 ("gpt-4o-mini on 2026-09-01 against these twenty probes") would let anyone check
 their own account against a community reference with no hosted service, and the
 fingerprint signal would become a shared early-warning system -- the one idea here
@@ -1277,12 +1348,13 @@ than a "never" -- it is just not close to the top of that list.
 - Near-zero running cost. Local embeddings by default, judge opt-in and only on
   suspicion.
 - No internet dependency except the target endpoint, with one exception stated
-  plainly: the default embedding model is a 32MB one-time download. Set
-  `embedder: hashing` to stay fully offline, at the cost of a weaker signal on
-  rewrites that preserve meaning.
+  plainly: the default embedding model is a 32MB download, pinned to a fixed
+  revision and fetched once. Set `HF_HUB_OFFLINE=1` once it is cached, or set
+  `embedder: hashing` to never download anything, at the cost of a weaker signal
+  on rewrites that preserve meaning.
 - Plain text config, so it lives in git.
 - Works with any OpenAI-compatible endpoint, which covers most providers plus
-  local Ollama and vLLM.
+  local Ollama and vLLM, and with anything else over `type: http`.
 
 ---
 
