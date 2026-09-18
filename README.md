@@ -988,7 +988,7 @@ from any `claude_code` target with the probe's own `targets:` field.
 | `has_keys: [a, b]` | Those keys are present in the JSON, found leniently. Deliberately separate from `valid_json`, so the report can say the data survived even when the envelope broke. |
 | `constant_fields: [total, due_date]` | Those fields' *values*, found leniently, must stay whatever the baseline learned them to be. |
 | `semantic_similarity: auto` | Learn the band. The default. |
-| `semantic_similarity: 0.9` | A fixed floor on cosine *similarity* (1 = identical): distance above `0.1` is drift. `semantic_distance: 0.1` is the same rule written as a distance. The report names which spelling set the band. |
+| `semantic_similarity: <n>` / `semantic_distance: <n>` | A fixed threshold instead of a learned one. Both spellings are currently applied the same way, as a cap on *distance* (0 = identical, 1 = totally different) -- so `semantic_similarity: 0.1` and `semantic_distance: 0.1` mean the same thing today, not similarity-vs-distance inverses of each other. If you want a similarity floor, write `1 - similarity` yourself until the spellings diverge. |
 | `max_length: 2000` | Hard cap on response length, as a second signal alongside the learned `length_chars` band. |
 
 Several signals are always on and need no configuration: semantic distance, JSON
@@ -1222,22 +1222,25 @@ workflow drift apart and the one in the README is the one nobody re-tests.
 Three things it relies on:
 
 - **Commit `.stillsane/baselines/`.** The workflow needs something to compare
-  against. They are plain text and diff like code. stillsane writes a
-  `.gitignore` inside `.stillsane/` that keeps `history.sqlite`, `runs/` and the
-  grown variance pool out of git -- those change on every run and are local
-  state, not reference outputs.
-- **History lives in a cache, and the workflow saves it even when `check` fails.**
-  Every checkout starts fresh, and without *some* history `status`, `history`,
-  `calibrate` and `trend` have nothing to read. The workflow restores
-  `.stillsane/history.sqlite` with `actions/cache/restore` and saves it with
-  `actions/cache/save` under `if: always()` -- the split matters, because a
-  DRIFT exits 1, a failed step fails the job, and the plain `actions/cache`
-  action does not save on a failed job. Without the split, exactly the runs you
-  most want in history -- the ones that fired -- are the ones that vanish, and
-  every alert reads as day one. This is still best-effort, not durable: a cache
-  eviction resets it silently, with no run ever failing, which is why
-  `stillsane status` prints "history since <date>, N runs" from the database's
-  true, unbounded age. Watch that line, not just the exit code.
+  against. They are plain text and diff like code. `.stillsane/history.sqlite`
+  and `.stillsane/runs/` change on every run and are local state, not
+  reference outputs -- add them to your own `.gitignore` alongside
+  `.stillsane/baselines/` staying tracked.
+- **History lives in a cache.** Every checkout starts fresh, and without *some*
+  history `status`, `history`, `calibrate` and `trend` have nothing to read.
+  The workflow restores and saves `.stillsane/history.sqlite` with a single
+  `actions/cache` step, keyed per run with a `restore-keys` prefix so each run
+  picks up the most recent copy. **Known gap:** `actions/cache`'s save step does
+  not run when the job has already failed, and `check` fails the job on
+  `DRIFT` -- so in this exact workflow, a day that actually drifts is the one
+  day whose history does not get saved, and `first_seen`/`consecutive_runs`
+  and the streak headline will under-count. Splitting into
+  `actions/cache/restore` plus `actions/cache/save` under `if: always()` fixes
+  it; that split is not yet in the example workflow, so treat the streak
+  fields as best-effort until it lands. Either way this remains best-effort,
+  not durable: a cache eviction resets it silently, with no run ever failing,
+  which is why `stillsane status` prints "history since <date>, N runs" from
+  the database's true, unbounded age. Watch that line, not just the exit code.
 - **A daily schedule is the point.** Provider-side model changes arrive without
   warning; finding out within a day is the entire product. Pin the package
   version in the workflow; the config format is not frozen yet, and a scheduled
