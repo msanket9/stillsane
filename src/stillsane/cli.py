@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import sys
 import time
+import traceback
 from pathlib import Path
 
 from . import __version__
@@ -871,6 +872,13 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_CODES[Level.ERROR]
     except KeyboardInterrupt:
         return 130
+    except Exception as exc:
+        # Last resort. An uncaught exception exits 1, which is the DRIFT code, so a
+        # bug in this tool would read to CI as a regression in the monitored app.
+        # The traceback stays so the bug remains reportable.
+        traceback.print_exc()
+        print(f"stillsane: internal error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return EXIT_CODES[Level.ERROR]
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -251,6 +251,14 @@ ambiguity that produced those three.
   `has_keys` and is not reliably caught by `semantic_distance` on a short JSON
   string. Opt-in per field; a field missing from the response is left to
   `has_keys`.
+- A provider body the target could not read (`{"choices": ["x"]}`, a non-dict
+  tool call, a non-numeric `usage.cost`), or a `base_url` `httpx` rejects as
+  invalid, used to raise out of `check` uncaught. Python exits 1 on an uncaught
+  exception, which is the DRIFT code, so CI read a broken gateway as drift, no
+  webhook fired, no history row was written, and every other probe's paid
+  samples were discarded. Each is now an ERROR on that sample
+  (`could not read response: ...`, `invalid URL: ...`), never retried, and
+  `main` has a last-resort handler that prints the traceback and exits 3.
 
 ## 0.0.10 - 2026-08-21
 

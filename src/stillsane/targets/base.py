@@ -273,7 +273,12 @@ class HTTPTarget(Target):
 
             body = response.json()
             sample.raw = body if isinstance(body, dict) else {"response": body}
-            for field, value in self.parse(probe, body).items():
+            try:
+                parsed = self.parse(probe, body)
+            except Exception as exc:  # a body shape this target does not understand
+                sample.error = f"could not read response: {type(exc).__name__}: {exc}"
+                return sample, False
+            for field, value in parsed.items():
                 setattr(sample, field, value)
 
         except RuntimeError as exc:
@@ -287,6 +292,12 @@ class HTTPTarget(Target):
             sample.latency_ms = (time.perf_counter() - started) * 1000.0
             sample.error = f"timeout after {self.config.timeout_s}s"
             return sample, True
+        except httpx.InvalidURL as exc:
+            # Not an `httpx.HTTPError` subclass, and not transient: the request was
+            # never built, so asking again asks the same malformed question.
+            sample.latency_ms = (time.perf_counter() - started) * 1000.0
+            sample.error = f"invalid URL: {exc}"
+            return sample, False
         except httpx.HTTPError as exc:
             # Connection-level: refused, reset, DNS, a read that died mid-flight.
             # The request did not land, so nothing was measured.

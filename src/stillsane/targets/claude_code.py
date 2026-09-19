@@ -169,7 +169,7 @@ class ClaudeCodeTarget(Target):
             return sample, False
 
         sample.raw = body
-        text = body.get("result") or ""
+        text = str(body.get("result") or "")
 
         if _looks_like_a_leaked_tool_call(text):
             # Kept in `.text`, truncated, for the same reason an HTTP error body is

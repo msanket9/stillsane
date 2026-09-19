@@ -272,6 +272,47 @@ def test_a_genuinely_empty_reply_is_an_error():
     assert "length" in sample.error
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"choices": ["not-a-dict"]},
+        {"choices": [{"message": {"tool_calls": ["not-a-dict"]}}]},
+        {"choices": [{"message": {"content": "x"}}], "usage": {"cost": "free"}},
+    ],
+)
+def test_a_body_shape_the_target_cannot_read_is_an_error_not_an_exception(body):
+    """An uncaught `AttributeError` out of `parse` used to escape `check` and exit 1,
+    the DRIFT code, with no history row and every other probe's samples discarded.
+    """
+    sample = call(build_target(NO_RETRY), PROBE, lambda r: httpx.Response(200, json=body))
+    assert not sample.ok
+    assert "could not read response" in sample.error
+
+
+def test_an_unreadable_body_shape_is_not_retried():
+    """The same body comes back identical on the second call; retrying only spends."""
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(200, json={"choices": ["not-a-dict"]})
+
+    sample = call(build_target(FAST_RETRY.model_copy(update={"retries": 2})), PROBE, handler)
+    assert not sample.ok
+    assert len(calls) == 1
+
+
+def test_an_invalid_url_is_an_error_not_an_exception():
+    """`httpx.InvalidURL` is not an `httpx.HTTPError`, so it used to escape."""
+    bad = NO_RETRY.model_copy(update={"base_url": "https://api.example.com/v1\x00"})
+
+    def handler(request):  # pragma: no cover - never reached
+        return httpx.Response(200, json=oai_body())
+
+    sample = call(build_target(bad), PROBE, handler)
+    assert not sample.ok
+
+
 def test_gateway_reported_cost_is_used_when_present():
     body = oai_body()
     body["usage"]["cost"] = 0.00042

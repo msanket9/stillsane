@@ -92,6 +92,13 @@ def attempt(target_config, probe, process_factory):
 
 # --- Happy path -------------------------------------------------------------
 
+def test_a_non_string_result_is_coerced_rather_than_raising():
+    """A non-string `result` used to reach `re.search` unguarded and escape as a `TypeError`."""
+    sample, _, _ = attempt(cc_target(), PROBE, lambda: FakeProcess(stdout=result_json({"a": 1})))
+    assert isinstance(sample.text, str)
+
+
+
 
 def test_result_field_becomes_sample_text():
     sample, transient, _ = attempt(cc_target(), PROBE, lambda: FakeProcess(stdout=result_json("hi there")))

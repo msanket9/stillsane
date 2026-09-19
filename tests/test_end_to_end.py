@@ -1825,6 +1825,20 @@ def test_missing_api_key_is_an_error_not_a_traceback(tmp_path, monkeypatch, caps
     assert "STILLSANE_TEST_MISSING_KEY" in capsys.readouterr().out
 
 
+def test_an_unexpected_exception_exits_as_an_error_not_as_drift(monkeypatch, capsys):
+    """Python's exit status for an uncaught exception is 1, the DRIFT code, so a bug in
+    the tool would otherwise read to CI as a regression in the monitored app.
+    """
+
+    def boom(args):
+        raise KeyError("center")
+
+    monkeypatch.setattr(cli, "cmd_status", boom)
+    code = cli.main(["status"])
+    assert code == 3
+    assert "internal error: KeyError" in capsys.readouterr().err
+
+
 def test_an_invalid_config_is_an_error_not_a_traceback(tmp_path, capsys):
     """A config that fails pydantic validation used to raise `ValidationError`
     from inside `_load`, uncaught in `main`, which exits 1 -- the DRIFT code --
