@@ -218,6 +218,39 @@ ambiguity that produced those three.
   their stored samples, so the signal correctly stays silent on them rather than
   guessing -- recapture (`stillsane baseline`) to start watching for truncation
   on a probe that already has a baseline.
+- New command, `stillsane trend`: reads history only (no sampling) and reports a
+  sustained shift no single run crossed `warn_k` for -- the median of the
+  earliest runs against the current baseline version versus the most recent
+  ones (`--window`, default 5), both expressed against today's fixed band
+  rather than the `z` recorded at the time, since pooling tightens the band
+  over time. `--strict` exits 2 on a shift. History rows now record
+  `baseline_version` (an additive column, migrated on open) so runs recorded
+  against a since-replaced baseline are never averaged in with current ones.
+- `stillsane status` prints `history since <date>, N run(s)` from the
+  database's true, unbounded age, so a history lost to a CI cache miss is
+  visible even though `runs recorded` is bounded by `--limit`.
+- Alerts now answer "since when?": each probe in the JSON payload carries
+  `first_seen` and `consecutive_runs`, and the Slack headline appends
+  `(day N)` once a streak is more than a passing mention. New
+  `alerts.repeat_every` suppresses resending an unchanged verdict (unset sends
+  every non-PASS run, as before; `0` sends only when a probe's verdict first
+  changes; a positive number resends every that-many runs).
+- New target option `attribute_to`: names a control target (typically the raw
+  model behind an app) so that when a `type: http` probe moves, the report says
+  whether the control moved too -- local to the app, or consistent with the
+  provider. No extra sampling; fingerprints are deliberately excluded from
+  "did the control move", and a probe that errored gets no attribution line.
+- New flag, `stillsane baseline --compare-previous`: after capturing, compares
+  the new version to the one it replaced using the exact comparison `check`
+  would, and notes when the config changed between the two. Purely
+  informational; `baseline` still exits 0 and the new version is written
+  regardless.
+- New check, `constant_fields: [name, ...]`: those fields' values, found
+  leniently, must stay whatever the baseline learned. Aimed at the gap where a
+  digit transposition (`1240.50` to `1204.50`) passes `valid_json` and
+  `has_keys` and is not reliably caught by `semantic_distance` on a short JSON
+  string. Opt-in per field; a field missing from the response is left to
+  `has_keys`.
 
 ## 0.0.10 - 2026-08-21
 

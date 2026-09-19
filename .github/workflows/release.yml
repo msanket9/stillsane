@@ -1,0 +1,53 @@
+name: release
+
+# Publishes to PyPI when a version tag is pushed. Requires a trusted publisher
+# registered on PyPI (project `stillsane`, workflow `release.yml`, environment
+# `pypi`); protect the `pypi` environment to add a human approval gate.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Fail fast: a tag that disagrees with __version__ is how a tree ahead of
+      # (or behind) the tag ends up published under the wrong number.
+      - name: Refuse to publish a tag that does not match __version__
+        run: |
+          version="$(grep -oP '__version__ = "\K[^"]+' src/stillsane/__init__.py)"
+          test "v${version}" = "${GITHUB_REF_NAME}" || {
+            echo "tag ${GITHUB_REF_NAME} does not match __version__ v${version}" >&2
+            exit 1
+          }
+
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
