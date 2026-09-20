@@ -309,10 +309,50 @@ def test_max_length_does_not_duplicate_the_always_on_length_signal(embedder):
     assert capped.band_override == 2000.0
 
 
-def test_semantic_threshold_can_be_pinned(embedder):
-    signals = build_signals([{"semantic_similarity": 0.2}], embedder)
+def test_semantic_distance_threshold_can_be_pinned(embedder):
+    signals = build_signals([{"semantic_distance": 0.2}], embedder)
     semantic = next(s for s in signals if s.name == "semantic_distance")
     assert semantic.band_override == 0.2
+
+
+def test_semantic_similarity_is_inverted_into_a_distance_ceiling(embedder):
+    """`semantic_similarity: 0.9` means "stay 90% similar", a distance ceiling of 0.1.
+
+    It used to be applied as a distance of 0.9, which no response ever exceeds, so a
+    check documented as a threshold could never fire.
+    """
+    signals = build_signals([{"semantic_similarity": 0.9}], embedder)
+    semantic = next(s for s in signals if s.name == "semantic_distance")
+    assert semantic.band_override == pytest.approx(0.1)
+
+
+def test_a_similarity_floor_actually_fires_on_a_prose_wrapped_response(embedder):
+    """The repro from the audit: a documented threshold that could never be crossed."""
+    from stillsane.compare import BandConfig, evaluate_pairwise
+    from stillsane.models import Level
+
+    stable = ['{"total": 1240.50, "due_date": "2026-07-01"}'] * 4 + [
+        '{"due_date": "2026-07-01", "total": 1240.50}'
+    ]
+    wrapped = "Sure! I found the following:\n{\"total\": 1240.5, \"due_date\": \"2026-07-01\"}\nHappy to help."
+    semantic = next(
+        s for s in build_signals([{"semantic_similarity": 0.9}], embedder) if s.name == "semantic_distance"
+    )
+    verdict = evaluate_pairwise(
+        semantic, [sample(t) for t in stable], [sample(wrapped) for _ in range(3)], BandConfig()
+    )
+    assert verdict.level is not Level.PASS
+    assert verdict.band.pinned and verdict.band.upper == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize(
+    "check",
+    [{"semantic_similarity": 1.5}, {"semantic_similarity": -0.1}, {"semantic_distance": -1},
+     {"semantic_similarity": "high"}, {"semantic_distance": True}],
+)
+def test_semantic_thresholds_reject_nonsense(embedder, check):
+    with pytest.raises(ValueError):
+        build_signals([check], embedder)
 
 
 def test_semantic_auto_leaves_the_band_learned(embedder):

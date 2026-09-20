@@ -164,6 +164,8 @@ class Band:
     upper: float | None
     n: int
     floored: bool = False
+    #: Set from config rather than learned from the probe's own samples.
+    pinned: bool = False
 
     def contains(self, value: float) -> bool:
         if self.lower is not None and value < self.lower:

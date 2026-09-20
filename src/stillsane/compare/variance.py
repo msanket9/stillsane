@@ -141,7 +141,9 @@ def robust_band(
         # Explicit bound from config. Centre stays as measured so `z` still reads
         # as "distance from normal", but the gate is the user's number.
         eff_scale = max(abs(override - centre), EPS) / cfg.warn_k
-        return Band(center=centre, scale=eff_scale, lower=None, upper=override, n=n, floored=False)
+        return Band(
+            center=centre, scale=eff_scale, lower=None, upper=override, n=n, floored=False, pinned=True
+        )
 
     raw_half = cfg.warn_k * raw_scale
     half = max(raw_half, floor, rel_floor * abs(centre))

@@ -988,7 +988,7 @@ from any `claude_code` target with the probe's own `targets:` field.
 | `has_keys: [a, b]` | Those keys are present in the JSON, found leniently. Deliberately separate from `valid_json`, so the report can say the data survived even when the envelope broke. |
 | `constant_fields: [total, due_date]` | Those fields' *values*, found leniently, must stay whatever the baseline learned them to be. |
 | `semantic_similarity: auto` | Learn the band. The default. |
-| `semantic_similarity: <n>` / `semantic_distance: <n>` | A fixed threshold instead of a learned one. Both spellings are currently applied the same way, as a cap on *distance* (0 = identical, 1 = totally different) -- so `semantic_similarity: 0.1` and `semantic_distance: 0.1` mean the same thing today, not similarity-vs-distance inverses of each other. If you want a similarity floor, write `1 - similarity` yourself until the spellings diverge. |
+| `semantic_similarity: 0.9` | A fixed floor on cosine *similarity* (1 = identical): a response less than 90% similar to the baseline is drift, i.e. a distance ceiling of `0.1`. `semantic_distance: 0.1` is the same rule written as a distance. The report marks a configured band `(pinned)` rather than a learned one. |
 | `max_length: 2000` | Hard cap on response length, as a second signal alongside the learned `length_chars` band. |
 
 Several signals are always on and need no configuration: semantic distance, JSON

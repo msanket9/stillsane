@@ -268,6 +268,18 @@ ambiguity that produced those three.
   and `actions/cache/save` under `if: always()`, pins `stillsane==0.0.11`, and
   sets `permissions: contents: read`. If you copied the old workflow, copy the
   new one.
+- **Behaviour change:** `semantic_similarity: <n>` was applied as a *distance*
+  ceiling of `n`, though the name (and the README) describe a similarity. The
+  signal is a distance (0 = identical), so `semantic_similarity: 0.9` -- "stay at
+  least 90% similar" -- pinned a ceiling of 0.9, which no response ever exceeds,
+  and the check could never fire. It now means what it says: a similarity in
+  [0, 1] becomes a distance ceiling of `1 - n`. `semantic_distance: <n>` is
+  accepted (it always was, but was unlisted in the unknown-check error and the
+  README) as the same rule in distance units. Both reject out-of-range or
+  non-numeric values, and a configured band is marked `(pinned)` in the report.
+  **If you wrote `semantic_similarity: 0.15` meaning a distance, change it to
+  `semantic_distance: 0.15`** -- read as a similarity it would now fire on almost
+  everything. The config hash is unchanged, so existing baselines stay valid.
 
 ## 0.0.10 - 2026-08-21
 

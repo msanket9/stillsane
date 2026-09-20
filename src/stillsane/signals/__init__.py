@@ -53,6 +53,12 @@ ALWAYS_ON = (
 )
 
 
+def _number(name: str, value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"`{name}` needs a number or `auto`, not {value!r}.")
+    return float(value)
+
+
 def _normalise(check: Any) -> tuple[str, Any]:
     """Accept both `- valid_json` and `- has_keys: [a, b]` forms."""
     if isinstance(check, str):
@@ -105,8 +111,24 @@ def build_signals(
             signals.append(HasKeys(value))
         elif name in ("semantic_similarity", "semantic_distance"):
             # `auto` is the default behaviour: learn the band. A number pins it.
+            # The signal itself is a *distance* (0 = identical), so the two
+            # spellings differ in unit: `semantic_similarity: 0.9` means "stay at
+            # least 90% similar", which is a distance ceiling of 0.1. Applying the
+            # number as-is made a similarity threshold a distance of 0.9, which no
+            # response ever exceeds, so the check could never fire.
             if value not in (None, "auto"):
-                semantic.band_override = float(value)
+                number = _number(name, value)
+                if name == "semantic_similarity":
+                    if not 0.0 <= number <= 1.0:
+                        raise ValueError(
+                            "`semantic_similarity` is a similarity in [0, 1] "
+                            "(1 = identical); use `semantic_distance` to give a distance."
+                        )
+                    semantic.band_override = 1.0 - number
+                else:
+                    if number < 0.0:
+                        raise ValueError("`semantic_distance` cannot be negative.")
+                    semantic.band_override = number
         elif name == "max_length":
             # A second, independent signal, not an override of the always-on
             # `length_chars` -- that one keeps its own learned two-sided band.
@@ -128,6 +150,6 @@ def build_signals(
         else:
             raise ValueError(
                 f"Unknown check {name!r}. Supported: valid_json, has_keys, "
-                "semantic_similarity, max_length, constant_fields."
+                "semantic_similarity, semantic_distance, max_length, constant_fields."
             )
     return signals

@@ -62,6 +62,8 @@ def _signal_line(sv: SignalVerdict, paint: Painter) -> str:
     # always known which; the report used to keep it to itself.
     if sv.band is not None and sv.band.floored:
         band += " (floor)"
+    elif sv.band is not None and sv.band.pinned:
+        band += " (pinned)"
 
     if observed or band or effect:
         # 24, not 20: `has_keys[total,due_date]` -- the flagship example's own
