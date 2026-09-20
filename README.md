@@ -1226,21 +1226,18 @@ Three things it relies on:
   and `.stillsane/runs/` change on every run and are local state, not
   reference outputs -- add them to your own `.gitignore` alongside
   `.stillsane/baselines/` staying tracked.
-- **History lives in a cache.** Every checkout starts fresh, and without *some*
-  history `status`, `history`, `calibrate` and `trend` have nothing to read.
-  The workflow restores and saves `.stillsane/history.sqlite` with a single
-  `actions/cache` step, keyed per run with a `restore-keys` prefix so each run
-  picks up the most recent copy. **Known gap:** `actions/cache`'s save step does
-  not run when the job has already failed, and `check` fails the job on
-  `DRIFT` -- so in this exact workflow, a day that actually drifts is the one
-  day whose history does not get saved, and `first_seen`/`consecutive_runs`
-  and the streak headline will under-count. Splitting into
-  `actions/cache/restore` plus `actions/cache/save` under `if: always()` fixes
-  it; that split is not yet in the example workflow, so treat the streak
-  fields as best-effort until it lands. Either way this remains best-effort,
-  not durable: a cache eviction resets it silently, with no run ever failing,
-  which is why `stillsane status` prints "history since <date>, N runs" from
-  the database's true, unbounded age. Watch that line, not just the exit code.
+- **History lives in a cache, and the workflow saves it even when `check` fails.**
+  Every checkout starts fresh, and without *some* history `status`, `history`,
+  `calibrate` and `trend` have nothing to read. The workflow restores
+  `.stillsane/history.sqlite` with `actions/cache/restore` and saves it with
+  `actions/cache/save` under `if: always()`. The split matters: a DRIFT exits 1,
+  a failed step fails the job, and the plain `actions/cache` action does not save
+  on a failed job. Without the split, exactly the runs you most want in history
+  -- the ones that fired -- are the ones that vanish, and every alert reads as
+  day one. This is still best-effort, not durable: a cache eviction resets it
+  silently, with no run ever failing, which is why `stillsane status` prints
+  "history since <date>, N runs" from the database's true, unbounded age. Watch
+  that line, not just the exit code.
 - **A daily schedule is the point.** Provider-side model changes arrive without
   warning; finding out within a day is the entire product. Pin the package
   version in the workflow; the config format is not frozen yet, and a scheduled

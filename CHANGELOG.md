@@ -259,6 +259,15 @@ ambiguity that produced those three.
   samples were discarded. Each is now an ERROR on that sample
   (`could not read response: ...`, `invalid URL: ...`), never retried, and
   `main` has a last-resort handler that prints the traceback and exits 3.
+- The example workflow (`examples/invoice-extract/github-actions.yml`) lost the
+  history of every non-PASS run. It restored `.stillsane/history.sqlite` with
+  plain `actions/cache`, whose save post-step is skipped when the job has
+  failed, and `check` fails the job on DRIFT -- so `first_seen`,
+  `consecutive_runs`, `trend` and the "(day N)" headline never saw a day that
+  drifted, and every alert read as day one. It now uses `actions/cache/restore`
+  and `actions/cache/save` under `if: always()`, pins `stillsane==0.0.11`, and
+  sets `permissions: contents: read`. If you copied the old workflow, copy the
+  new one.
 
 ## 0.0.10 - 2026-08-21
 

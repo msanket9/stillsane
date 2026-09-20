@@ -14,6 +14,9 @@ on:
   # Uncomment to also gate pull requests, catching prompt edits before they land.
   # pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -31,33 +34,52 @@ jobs:
           path: ~/.cache/huggingface
           key: stillsane-embedding-model
 
-      # Every checkout starts fresh, so without this `status`, `history` and
-      # `calibrate` would have nothing to read -- the README's "since when?"
+      # Every checkout starts fresh, so without this `status`, `history`, `trend`
+      # and `calibrate` would have nothing to read -- the README's "since when?"
       # promise does not hold in this deployment otherwise. `key` is unique to
       # this run, so it never hits and every run instead restores the most
-      # recent entry via `restore-keys`, then saves its own (now one run newer)
-      # copy back at the end of the job for the next run to pick up.
+      # recent entry via `restore-keys`; the matching save step at the bottom
+      # writes this run's (one run newer) copy back for the next run.
       #
-      # This is best-effort, not durable: a cache eviction (GitHub prunes
+      # Restore and save are separate actions on purpose. The plain
+      # `actions/cache` action saves in a post-step that is skipped when the job
+      # has failed, and `check` exits 1 on DRIFT, which fails the job. Using it
+      # here would persist only the PASS runs: exactly the runs that fired would
+      # be missing from history, and every alert would read as day one.
+      #
+      # This is still best-effort, not durable: a cache eviction (GitHub prunes
       # unused entries, default 7-day cutoff) silently resets history with no
       # run ever failing. `stillsane status` prints "history since <date>, N
       # runs" from the database's true, unbounded age specifically so a reset
       # like that is visible rather than silent -- watch that line, not just
       # the exit code.
       - name: Restore drift history
-        uses: actions/cache@v4
+        id: history
+        uses: actions/cache/restore@v4
         with:
           path: .stillsane/history.sqlite
           key: stillsane-history-${{ github.run_id }}
           restore-keys: |
             stillsane-history-
 
-      - run: pip install stillsane
+      # Pinned: the config format is not frozen before 0.1, and an unpinned
+      # install in a scheduled job is how a config breaks at 6am. Bump it
+      # deliberately, alongside the CHANGELOG.
+      - run: pip install "stillsane==0.0.11"
 
       - name: Check for drift
         run: stillsane check
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      # Saved even when `check` failed the job: a DRIFT run is the one `history`,
+      # `trend` and the "(day N)" streak most need to see.
+      - name: Save drift history
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .stillsane/history.sqlite
+          key: ${{ steps.history.outputs.cache-primary-key }}
 
       # `check` exits 1 on drift, which fails the job above. If you would rather be
       # told than blocked, set `alerts.webhook` in your config and add
