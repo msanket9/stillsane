@@ -345,6 +345,14 @@ def test_a_similarity_floor_actually_fires_on_a_prose_wrapped_response(embedder)
     assert verdict.band.pinned and verdict.band.upper == pytest.approx(0.1)
 
 
+def test_a_quoted_number_is_still_accepted(embedder):
+    """`float("0.2")` worked before the unit fix; a strict type check must not break it."""
+    semantic = next(
+        s for s in build_signals([{"semantic_distance": "0.2"}], embedder) if s.name == "semantic_distance"
+    )
+    assert semantic.band_override == 0.2
+
+
 @pytest.mark.parametrize(
     "check",
     [{"semantic_similarity": 1.5}, {"semantic_similarity": -0.1}, {"semantic_distance": -1},

@@ -69,14 +69,13 @@ def fake_hub(monkeypatch, tmp_path):
     """Stands in for `snapshot_download` and `StaticModel.from_pretrained`."""
     import huggingface_hub
     import model2vec
-    from huggingface_hub.errors import LocalEntryNotFoundError
 
-    log = {"downloads": [], "loaded": [], "cached": True}
+    log = {"downloads": [], "loaded": [], "cached": True, "broken_cache": False}
 
     def snapshot_download(repo_id, *, revision=None, local_files_only=False, **kwargs):
         log["downloads"].append({"repo": repo_id, "revision": revision, "local": local_files_only})
         if local_files_only and not log["cached"]:
-            raise LocalEntryNotFoundError("not cached")
+            raise FileNotFoundError("not cached")
         return str(tmp_path)
 
     class FakeModel:
@@ -85,6 +84,8 @@ def fake_hub(monkeypatch, tmp_path):
 
     def from_pretrained(path, **kwargs):
         log["loaded"].append((path, kwargs))
+        if log["broken_cache"] and len(log["loaded"]) == 1:
+            raise FileNotFoundError("model.safetensors")
         return FakeModel()
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot_download)
@@ -106,7 +107,7 @@ def test_a_cached_model_never_touches_the_hub(fake_hub, tmp_path):
     assert [d["local"] for d in fake_hub["downloads"]] == [True]
     path, kwargs = fake_hub["loaded"][0]
     assert path == str(tmp_path), "must load the resolved local folder, not the repo id"
-    assert kwargs["force_download"] is False
+    assert kwargs == {}, "no extra kwargs: older model2vec releases do not accept force_download"
 
 
 def test_a_missing_model_is_downloaded_once_at_the_pinned_revision(fake_hub):
@@ -116,6 +117,19 @@ def test_a_missing_model_is_downloaded_once_at_the_pinned_revision(fake_hub):
     Model2VecEmbedder().encode(["x"])
     assert [d["local"] for d in fake_hub["downloads"]] == [True, False]
     assert fake_hub["downloads"][1]["revision"] == DEFAULT_MODEL_REVISION
+
+
+def test_an_incomplete_cached_snapshot_is_repaired_not_fatal(fake_hub):
+    """An interrupted first download leaves a snapshot folder with files missing, and
+    older `huggingface_hub` returns it from a local-only lookup without checking.
+    Cache-first must fall through to a download, not fail on every later run."""
+    from stillsane.signals.semantic import DEFAULT_MODEL_REVISION
+
+    fake_hub["broken_cache"] = True
+    assert Model2VecEmbedder().encode(["x"]).shape == (1, 4)
+    assert [d["local"] for d in fake_hub["downloads"]] == [True, False]
+    assert fake_hub["downloads"][1]["revision"] == DEFAULT_MODEL_REVISION
+    assert len(fake_hub["loaded"]) == 2
 
 
 def test_another_model_is_not_given_the_default_models_revision(fake_hub):

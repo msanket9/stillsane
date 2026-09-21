@@ -58,21 +58,28 @@ class Model2VecEmbedder:
         self.revision = revision or (DEFAULT_MODEL_REVISION if model_name == DEFAULT_MODEL else None)
         self._model = None
 
-    def _resolve_folder(self) -> str:
-        """Local snapshot of the pinned revision, downloading only if it is absent.
+    def _from_hub(self, static_model):
+        """Load the pinned snapshot from the local cache, fetching only if needed.
 
         Cache first: `from_pretrained` on a repo id re-resolves against the hub on
         every call (model2vec defaults `force_download=True`), which costs a
         connect timeout per run on an egress-restricted runner and follows `main`.
         `HF_HUB_OFFLINE=1` is honoured by `huggingface_hub` for the download step.
+
+        Any failure on the cached attempt falls through to a download rather than
+        only "not cached": an interrupted first download leaves a snapshot folder
+        with files missing, which older `huggingface_hub` returns without checking
+        and which then fails to load. Cache-first must not turn that into a
+        permanent failure, and a download is what fills the gaps in.
         """
         from huggingface_hub import snapshot_download
-        from huggingface_hub.errors import LocalEntryNotFoundError
 
         try:
-            return snapshot_download(self.model_name, revision=self.revision, local_files_only=True)
-        except LocalEntryNotFoundError:
-            return snapshot_download(self.model_name, revision=self.revision)
+            folder = snapshot_download(self.model_name, revision=self.revision, local_files_only=True)
+            return static_model.from_pretrained(folder)
+        except Exception:
+            folder = snapshot_download(self.model_name, revision=self.revision)
+            return static_model.from_pretrained(folder)
 
     def _load(self):
         if self._model is None:
@@ -91,9 +98,7 @@ class Model2VecEmbedder:
                     "with a weaker signal."
                 ) from exc
             try:
-                self._model = StaticModel.from_pretrained(
-                    self._resolve_folder(), force_download=False
-                )
+                self._model = self._from_hub(StaticModel)
             except Exception as exc:
                 # First use downloads ~32MB. An air-gapped box or a blocked egress
                 # should get told what happened and how to proceed, not a traceback

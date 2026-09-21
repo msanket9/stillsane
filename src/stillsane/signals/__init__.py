@@ -54,9 +54,13 @@ ALWAYS_ON = (
 
 
 def _number(name: str, value: Any) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"`{name}` needs a number or `auto`, not {value!r}.")
-    return float(value)
+    # A quoted number (`"0.2"`) was accepted before the unit fix and stays accepted.
+    try:
+        if isinstance(value, bool):
+            raise TypeError
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"`{name}` needs a number or `auto`, not {value!r}.") from None
 
 
 def _normalise(check: Any) -> tuple[str, Any]:

@@ -289,7 +289,7 @@ ambiguity that produced those three.
   upstream repo pushed a new revision every install would have started embedding
   on a different scale with nothing in the config hash to say so. It now resolves
   the pinned snapshot from the local cache first and downloads only when it is
-  absent. `huggingface_hub>=0.24` is now a declared dependency (it was already
+  absent or incomplete (an interrupted first download is repaired, not fatal). `huggingface_hub>=0.24` is now a declared dependency (it was already
   installed transitively). Existing baselines are **not** invalidated: the pin is
   the revision they were all captured under, so their config hash is unchanged.
   A future bump of `DEFAULT_MODEL_REVISION` folds into the hash and forces a
