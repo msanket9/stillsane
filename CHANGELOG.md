@@ -280,6 +280,20 @@ ambiguity that produced those three.
   **If you wrote `semantic_similarity: 0.15` meaning a distance, change it to
   `semantic_distance: 0.15`** -- read as a similarity it would now fire on almost
   everything. The config hash is unchanged, so existing baselines stay valid.
+- The embedding model is now pinned to a fixed commit and loaded cache-first.
+  `Model2VecEmbedder` passed the repo id to `StaticModel.from_pretrained`, whose
+  `force_download=True` default re-resolves `main` against huggingface.co on every
+  load. Every `check`, `baseline` and `init --from-logs` therefore made a network
+  call (a connect timeout per run on an egress-restricted CI runner, against the
+  README's "no internet dependency except the target endpoint"), and the day the
+  upstream repo pushed a new revision every install would have started embedding
+  on a different scale with nothing in the config hash to say so. It now resolves
+  the pinned snapshot from the local cache first and downloads only when it is
+  absent. `huggingface_hub>=0.24` is now a declared dependency (it was already
+  installed transitively). Existing baselines are **not** invalidated: the pin is
+  the revision they were all captured under, so their config hash is unchanged.
+  A future bump of `DEFAULT_MODEL_REVISION` folds into the hash and forces a
+  recapture, as it should.
 
 ## 0.0.10 - 2026-08-21
 

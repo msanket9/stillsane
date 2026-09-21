@@ -40,6 +40,9 @@ dependencies = [
     # `pip install stillsane` produced a tool that failed on its first command.
     # It pulls in no torch.
     "model2vec>=0.3",
+    # Used directly to fetch the embedding model at a pinned revision. Already a
+    # transitive dependency of model2vec; declared because we import it.
+    "huggingface_hub>=0.24",
 ]
 
 [project.optional-dependencies]

@@ -346,8 +346,9 @@ Related decisions, since they are the ones that determine whether this is usable
 
 ## Commands
 
-Python 3.10+, five direct dependencies, no torch. The embedding model is fetched
-once on first use (~32MB) and cached. See
+Python 3.10+, six direct dependencies, no torch. The embedding model is fetched
+once on first use (~32MB, pinned to a fixed revision) and cached; once cached, no
+run contacts the network for it. See
 [Design constraints](#design-constraints) if you need to stay fully offline.
 
 | Command | Reads | Costs | Answers |
@@ -1349,9 +1350,11 @@ than a "never" -- it is just not close to the top of that list.
   suspicion.
 - No internet dependency except the target endpoint, with one exception stated
   plainly: the default embedding model is a 32MB download, pinned to a fixed
-  revision and fetched once. Set `HF_HUB_OFFLINE=1` once it is cached, or set
-  `embedder: hashing` to never download anything, at the cost of a weaker signal
-  on rewrites that preserve meaning.
+  revision and fetched once. After that it loads from the local cache with no
+  network call, so an egress-restricted runner only needs the download to succeed
+  once (`HF_HUB_OFFLINE=1` makes a missing model fail fast instead of waiting on a
+  connect timeout). Set `embedder: hashing` to never download anything, at the
+  cost of a weaker signal on rewrites that preserve meaning.
 - Plain text config, so it lives in git.
 - Works with any OpenAI-compatible endpoint, which covers most providers plus
   local Ollama and vLLM, and with anything else over `type: http`.

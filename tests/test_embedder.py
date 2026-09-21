@@ -61,6 +61,95 @@ def test_a_broken_model_name_explains_itself():
         embedder.encode(["anything"])
 
 
+# --- Revision pinning (offline) ---------------------------------------------
+
+
+@pytest.fixture
+def fake_hub(monkeypatch, tmp_path):
+    """Stands in for `snapshot_download` and `StaticModel.from_pretrained`."""
+    import huggingface_hub
+    import model2vec
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    log = {"downloads": [], "loaded": [], "cached": True}
+
+    def snapshot_download(repo_id, *, revision=None, local_files_only=False, **kwargs):
+        log["downloads"].append({"repo": repo_id, "revision": revision, "local": local_files_only})
+        if local_files_only and not log["cached"]:
+            raise LocalEntryNotFoundError("not cached")
+        return str(tmp_path)
+
+    class FakeModel:
+        def encode(self, texts):
+            return np.ones((len(texts), 4), dtype=np.float32)
+
+    def from_pretrained(path, **kwargs):
+        log["loaded"].append((path, kwargs))
+        return FakeModel()
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot_download)
+    monkeypatch.setattr(model2vec.StaticModel, "from_pretrained", staticmethod(from_pretrained))
+    return log
+
+
+def test_the_default_model_is_loaded_at_its_pinned_revision(fake_hub):
+    from stillsane.signals.semantic import DEFAULT_MODEL_REVISION
+
+    Model2VecEmbedder().encode(["x"])
+    assert all(d["revision"] == DEFAULT_MODEL_REVISION for d in fake_hub["downloads"])
+    assert fake_hub["downloads"][0]["repo"] == DEFAULT_MODEL
+
+
+def test_a_cached_model_never_touches_the_hub(fake_hub, tmp_path):
+    """The point of the pin: no per-run network call, and no drift onto a new `main`."""
+    Model2VecEmbedder().encode(["x"])
+    assert [d["local"] for d in fake_hub["downloads"]] == [True]
+    path, kwargs = fake_hub["loaded"][0]
+    assert path == str(tmp_path), "must load the resolved local folder, not the repo id"
+    assert kwargs["force_download"] is False
+
+
+def test_a_missing_model_is_downloaded_once_at_the_pinned_revision(fake_hub):
+    from stillsane.signals.semantic import DEFAULT_MODEL_REVISION
+
+    fake_hub["cached"] = False
+    Model2VecEmbedder().encode(["x"])
+    assert [d["local"] for d in fake_hub["downloads"]] == [True, False]
+    assert fake_hub["downloads"][1]["revision"] == DEFAULT_MODEL_REVISION
+
+
+def test_another_model_is_not_given_the_default_models_revision(fake_hub):
+    Model2VecEmbedder("someone/else").encode(["x"])
+    assert all(d["revision"] is None for d in fake_hub["downloads"])
+
+
+def test_pinning_did_not_invalidate_existing_baselines():
+    """The pinned revision is the one every existing baseline was captured under, so
+    the hash must be what it was before pinning existed."""
+    from stillsane.config import ProbeConfig, TargetConfig, config_hash
+    from stillsane.signals.semantic import DEFAULT_MODEL_REVISION, ORIGINAL_MODEL_REVISION
+
+    assert DEFAULT_MODEL_REVISION == ORIGINAL_MODEL_REVISION
+    probe = ProbeConfig(id="p", prompt="hi")
+    target = TargetConfig(name="t", base_url="https://x/v1", model="m")
+    # Measured on the tree immediately before pinning landed. If this changes, every
+    # stored baseline stops matching: update it only as a deliberate, noted break.
+    assert config_hash(probe, target, "model2vec") == "8238b1a8a0524470"
+    assert config_hash(probe, target, "model2vec") != config_hash(probe, target, "hashing")
+
+
+def test_bumping_the_pin_changes_the_hash(monkeypatch):
+    """A new revision means new vectors, so old baselines must refuse to compare."""
+    from stillsane.config import ProbeConfig, TargetConfig, config_hash
+    from stillsane.signals import semantic
+
+    probe = ProbeConfig(id="p", prompt="hi")
+    target = TargetConfig(name="t", base_url="https://x/v1", model="m")
+    before = config_hash(probe, target, "model2vec")
+    monkeypatch.setattr(semantic, "DEFAULT_MODEL_REVISION", "0" * 40)
+    assert config_hash(probe, target, "model2vec") != before
+
+
 # --- The model itself (network) -------------------------------------------
 
 

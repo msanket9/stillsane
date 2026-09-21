@@ -23,6 +23,19 @@ from .base import PairwiseSignal
 #: promise survives first contact.
 DEFAULT_MODEL = "minishlab/potion-base-8M"
 
+#: The commit of `DEFAULT_MODEL` every baseline is measured against. Without it the
+#: hub resolves `main` on each load, so the day the upstream repo pushes a new
+#: revision every install silently starts embedding on a different scale, and bands
+#: learned under the old vectors are compared against distances from the new ones.
+#: Bump it deliberately -- `config.config_hash` folds any change into the baseline
+#: hash, so a bump forces a recapture instead of silently mismatching.
+DEFAULT_MODEL_REVISION = "bf8b056651a2c21b8d2565580b8569da283cab23"
+
+#: The revision that was current when stillsane first shipped, and so the one every
+#: existing baseline was captured under. Hashed as plain "model2vec", so pinning did
+#: not invalidate baselines that were already valid: same weights, same scale.
+ORIGINAL_MODEL_REVISION = "bf8b056651a2c21b8d2565580b8569da283cab23"
+
 
 @runtime_checkable
 class Embedder(Protocol):
@@ -39,9 +52,27 @@ def _l2_normalise(mat: np.ndarray) -> np.ndarray:
 class Model2VecEmbedder:
     """Wraps model2vec. Imported lazily so the package loads without it."""
 
-    def __init__(self, model_name: str = DEFAULT_MODEL) -> None:
+    def __init__(self, model_name: str = DEFAULT_MODEL, revision: str | None = None) -> None:
         self.model_name = model_name
+        # The pin belongs to the default model only; another repo has other commits.
+        self.revision = revision or (DEFAULT_MODEL_REVISION if model_name == DEFAULT_MODEL else None)
         self._model = None
+
+    def _resolve_folder(self) -> str:
+        """Local snapshot of the pinned revision, downloading only if it is absent.
+
+        Cache first: `from_pretrained` on a repo id re-resolves against the hub on
+        every call (model2vec defaults `force_download=True`), which costs a
+        connect timeout per run on an egress-restricted runner and follows `main`.
+        `HF_HUB_OFFLINE=1` is honoured by `huggingface_hub` for the download step.
+        """
+        from huggingface_hub import snapshot_download
+        from huggingface_hub.errors import LocalEntryNotFoundError
+
+        try:
+            return snapshot_download(self.model_name, revision=self.revision, local_files_only=True)
+        except LocalEntryNotFoundError:
+            return snapshot_download(self.model_name, revision=self.revision)
 
     def _load(self):
         if self._model is None:
@@ -60,7 +91,9 @@ class Model2VecEmbedder:
                     "with a weaker signal."
                 ) from exc
             try:
-                self._model = StaticModel.from_pretrained(self.model_name)
+                self._model = StaticModel.from_pretrained(
+                    self._resolve_folder(), force_download=False
+                )
             except Exception as exc:
                 # First use downloads ~32MB. An air-gapped box or a blocked egress
                 # should get told what happened and how to proceed, not a traceback
@@ -117,6 +150,14 @@ def default_embedder(kind: str = "model2vec", model_name: str = DEFAULT_MODEL) -
     if kind == "hashing":
         return HashingEmbedder()
     return Model2VecEmbedder(model_name)
+
+
+def embedder_identity(kind: str) -> str:
+    """What `config_hash` records for this embedder: its name, plus its revision
+    when that is not the original one, so a bump invalidates baselines."""
+    if kind != "model2vec" or DEFAULT_MODEL_REVISION == ORIGINAL_MODEL_REVISION:
+        return kind
+    return f"{kind}@{DEFAULT_MODEL_REVISION}"
 
 
 class SemanticDistance(PairwiseSignal):

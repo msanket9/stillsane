@@ -469,6 +469,12 @@ class Config(BaseModel):
         return out
 
 
+def _embedder_identity(embedder: str) -> str:
+    from .signals.semantic import embedder_identity
+
+    return embedder_identity(embedder)
+
+
 def config_hash(probe: ProbeConfig, target: TargetConfig, embedder: str = "model2vec") -> str:
     """Fingerprint of everything that would invalidate a stored baseline.
 
@@ -490,7 +496,7 @@ def config_hash(probe: ProbeConfig, target: TargetConfig, embedder: str = "model
         # target actually sees, exactly like editing `prompt` does.
         "turns": [t.model_dump() for t in probe.turns] if probe.turns else None,
         "target": target.identity(),
-        "embedder": embedder,
+        "embedder": _embedder_identity(embedder),
     }
     blob = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
